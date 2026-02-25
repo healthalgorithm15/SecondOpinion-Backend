@@ -1,0 +1,218 @@
+const authService = require('../services/authService');
+const auditService = require('../services/auditService');
+const sendSMS = require('../utils/smsProvider');
+const sendEmail = require('../utils/emailProvider');
+const { generateToken } = require('../utils/tokenHelper');
+const User = require('../models/User');
+//const Blacklist = require('../models/Blacklist');
+
+// --- REGISTRATION ---
+exports.register = async (req, res) => {
+    try {
+        const { user, otp, emailToken } = await authService.registerUser(req.body);
+        
+        // Send SMS OTP
+        await sendSMS(user.mobile, otp);
+
+        // Send Email Verification Link if email exists
+        if (user.email) {
+            const url = `${req.protocol}://${req.get('host')}/api/auth/verify-email/${emailToken}`;
+            await sendEmail({ 
+                email: user.email, 
+                subject: 'Verify Your Health Account', 
+                message: `<p>Please click <a href="${url}">here</a> to verify your email.</p>` 
+            });
+        }
+        
+        res.status(200).json({ success: true, message: 'Verification details sent' });
+    } catch (err) { 
+        res.status(400).json({ success: false, message: err.message }); 
+    }
+};
+
+exports.verifyEmail = async (req, res) => {
+    try {
+        await authService.verifyEmailToken(req.params.token);
+        // Redirect to frontend login page with a success flag
+        res.redirect('http://localhost:3000/login?verified=true');
+    } catch (err) {
+        res.status(400).send(`<h1 style="color:red">Verification Failed: ${err.message}</h1>`);
+    }
+};
+
+// --- LOGIN FLOW ---
+exports.login = async (req, res) => {
+    try {
+        const { identifier, password } = req.body;
+        const { user, otp } = await authService.loginUser(identifier, password);
+
+        await sendSMS(user.mobile, otp);
+
+        if (user.email) {
+            await sendEmail({
+                email: user.email,
+                subject: 'Your Login OTP',
+                message: `Your code is: <strong>${otp}</strong>`
+            });
+        }
+
+        res.status(200).json({ success: true, message: 'OTP sent to registered contacts' });
+    } catch (err) { 
+        res.status(401).json({ success: false, message: err.message }); 
+    }
+};
+
+exports.googleLogin = async (req, res) => {
+    try {
+        const { idToken } = req.body; // Token received from React Google Login
+        
+        if (!idToken) {
+            return res.status(400).json({ success: false, message: "Google ID Token is required" });
+        }
+
+        // 1. Verify token and find/create user via Service
+        const user = await authService.googleAuth(idToken);
+
+        // 2. LOG THE SUCCESSFUL LOGIN
+        await auditService.logAction(user._id, 'GOOGLE_LOGIN_SUCCESS', req);
+
+        // 3. Generate JWT and respond
+        const token = generateToken(user._id);
+
+        res.status(200).json({
+            success: true,
+            token,
+            data: {
+                id: user._id,
+                name: user.name,
+                email: user.email,
+                authMethod: user.authMethod,
+                isEmailVerified: user.isEmailVerified
+            }
+        });
+    } catch (err) {
+        console.error("Google Auth Error:", err.message);
+        res.status(401).json({ success: false, message: 'Google authentication failed' });
+    }
+};
+
+exports.verifyOTP = async (req, res) => {
+    try {
+        const { identifier, otp } = req.body;
+        
+        const user = await User.findOne({ 
+            $or: [{ email: identifier }, { mobile: identifier }] 
+        }).select('+otp +otpExpire');
+
+        if (!user || user.otp !== otp || user.otpExpire < Date.now()) {
+            return res.status(401).json({ success: false, message: 'Invalid/Expired OTP' });
+        }
+
+        if (user.email && !user.isEmailVerified) {
+            return res.status(403).json({ success: false, message: 'Please verify your email link first' });
+        }
+
+        user.isVerified = true;
+        user.otp = undefined;
+        user.otpExpire = undefined;
+        await user.save();
+
+        // AUDIT LOG: Successful entry into the app
+        await auditService.logAction(user._id, 'LOGIN_SUCCESS', req);
+
+        res.status(200).json({ 
+            success: true, 
+            token: generateToken(user._id), 
+            data: user 
+        });
+    } catch (err) { 
+        res.status(500).json({ success: false, message: err.message }); 
+    }
+};
+
+// --- PASSWORD MANAGEMENT ---
+exports.forgotPassword = async (req, res) => {
+    try {
+        const { identifier } = req.body;
+        const { user, resetToken, resetOtp } = await authService.forgotPassword(identifier);
+
+        if (user.email) {
+            const resetUrl = `${req.protocol}://${req.get('host')}/reset-password/${resetToken}`;
+            await sendEmail({
+                email: user.email,
+                subject: 'Password Reset Request',
+                message: `<p>Click <a href="${resetUrl}">here</a> to reset your password. Link expires in 15 mins.</p>`
+            });
+        }
+
+        if (user.mobile) {
+            await sendSMS(user.mobile, `Your password reset code is: ${resetOtp}`);
+        }
+
+        res.status(200).json({ success: true, message: 'Reset link/OTP sent successfully' });
+    } catch (err) {
+        res.status(400).json({ success: false, message: err.message });
+    }
+};
+
+exports.resetPassword = async (req, res) => {
+    try {
+        const { identifier, tokenOrOtp, newPassword } = req.body;
+        await authService.resetPassword(identifier, tokenOrOtp, newPassword);
+        res.status(200).json({ success: true, message: 'Password reset successful. You can now login.' });
+    } catch (err) {
+        res.status(400).json({ success: false, message: err.message });
+    }
+};
+
+exports.updatePassword = async (req, res) => {
+    try {
+        const { currentPassword, newPassword } = req.body;
+        const user = await authService.updatePassword(req.user.id, currentPassword, newPassword);
+
+        if (user.email) {
+            await sendEmail({
+                email: user.email,
+                subject: 'Security Alert: Password Changed',
+                message: `
+                    <div style="font-family: sans-serif; padding: 20px; border: 1px solid #eee;">
+                        <h2>Password Updated</h2>
+                        <p>Hello ${user.name},</p>
+                        <p>Your password was changed on <b>${new Date().toLocaleString()}</b>.</p>
+                        <p style="color: #d9534f;"><b>If you did not do this, contact support immediately.</b></p>
+                    </div>`
+            });
+        }
+
+        res.status(200).json({ success: true, message: 'Password updated and notification sent.' });
+    } catch (err) {
+        res.status(400).json({ success: false, message: err.message });
+    }
+};
+
+// --- SESSION MANAGEMENT ---
+exports.logout = async (req, res) => {
+    try {
+        const token = req.headers.authorization?.split(' ')[1];
+        if (!token) return res.status(400).json({ message: "No token provided" });
+
+        // Add to Blacklist to invalidate the JWT immediately
+        await Blacklist.create({ token });
+
+        // AUDIT LOG: Record the manual logout
+        await auditService.logAction(req.user.id, 'LOGOUT', req);
+
+        res.status(200).json({ success: true, message: 'Logged out successfully' });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+exports.getMe = async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        res.status(200).json({ success: true, data: user });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
