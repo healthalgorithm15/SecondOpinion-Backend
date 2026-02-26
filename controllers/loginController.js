@@ -115,3 +115,9 @@ exports.googleLogin = async (req, res) => {
         res.status(401).json({ success: false, message: err.message }); 
     }
 };
+
+/**
+ * 4. Get Current User Profile
+ * This allows the Settings page to show real email/name
+ */
+
