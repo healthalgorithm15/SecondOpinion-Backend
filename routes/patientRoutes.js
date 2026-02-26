@@ -5,7 +5,8 @@ const {
     uploadRecord, 
     viewLocalFile,
     submitReview,
-    getCaseStatus // 🚀 Added to track AI progress for Step 3
+    getCaseStatus,
+    getReviewHistory // 🚀 Added to track AI progress for Step 3
 } = require('../controllers/patientController');
 const reportController = require('../controllers/reportController');
 
@@ -56,5 +57,6 @@ router.get('/case/:caseId', apiLimiter, getCaseStatus);
 router.get('/view/:id', apiLimiter, viewLocalFile);
 router.get('/case/pdf-ai/:caseId', protect, reportController.getAIAnalysisPDF);
 router.get('/case/pdf-doctor/:caseId', protect, reportController.getDoctorReviewPDF);
+router.get('/history', apiLimiter, getReviewHistory);
 
 module.exports = router;

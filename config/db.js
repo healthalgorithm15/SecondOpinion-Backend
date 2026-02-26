@@ -5,6 +5,7 @@ const mongoose = require('mongoose');
 const connectDB = async () => {
   try {
     // Use the URI from your centralized config object
+    console.log("Mongo uri",config.db.uri);
     const conn = await mongoose.connect(config.db.uri, { 
       maxPoolSize: 10,
       serverSelectionTimeoutMS: 5000,
@@ -22,3 +23,8 @@ const connectDB = async () => {
 
 // ... keep the rest of your reconnection logic ...
 module.exports = connectDB;
+
+
+
+
+

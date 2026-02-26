@@ -35,4 +35,5 @@ router.get('/case/:caseId', doctorCtrl.getCaseById);
  */
 router.post('/submit-opinion', doctorCtrl.submitOpinion);
 
+router.get('/history', doctorCtrl.getDoctorHistory);
 module.exports = router;
