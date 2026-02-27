@@ -30,23 +30,22 @@ const userSchema = new mongoose.Schema({
         default: 'patient' 
     },
     
+    // 🔔 COMMUNICATION & NOTIFICATIONS
+    pushToken: { 
+        type: String, 
+        default: null,
+        trim: true
+    },
+    socketId: { 
+        type: String, 
+        default: null 
+    },
+
     // Auth & Verification Status
-    isFirstLogin: { 
-        type: Boolean, 
-        default: true 
-    },
-    isVerified: { 
-        type: Boolean, 
-        default: false 
-    },
-    isEmailVerified: { 
-        type: Boolean, 
-        default: false 
-    },
-    isProfileApproved: { 
-        type: Boolean, 
-        default: false 
-    },
+    isFirstLogin: { type: Boolean, default: true },
+    isVerified: { type: Boolean, default: false },
+    isEmailVerified: { type: Boolean, default: false },
+    isProfileApproved: { type: Boolean, default: false },
 
     // Doctor Specific Fields
     specialization: { type: String },
@@ -76,11 +75,8 @@ const userSchema = new mongoose.Schema({
 });
 
 // 🛡️ MODERN ENCRYPTION MIDDLEWARE
-// We use async function without 'next' to avoid "next is not a function" error.
 userSchema.pre('save', async function () {
-    // Only hash the password if it's new or being modified
     if (!this.isModified('password')) return;
-
     try {
         const salt = await bcrypt.genSalt(10);
         this.password = await bcrypt.hash(this.password, salt);

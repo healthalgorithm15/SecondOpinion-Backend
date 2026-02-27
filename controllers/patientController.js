@@ -1,9 +1,13 @@
 const MedicalRecord = require('../models/MedicalRecord');
+const User = require('../models/User');
 const ReviewCase = require('../models/ReviewCase');
 const aiService = require('../services/aiService');
 const config = require('../config');
 const mongoose = require('mongoose');
+const { Expo } = require('expo-server-sdk');
 
+
+const expo = new Expo();
 /**
  * @desc    Get Patient Dashboard
  * @route   GET /api/patient/dashboard
@@ -76,6 +80,9 @@ exports.uploadRecord = async (req, res) => {
  * @desc    Submit for Second Opinion (Atomic Transaction)
  * @route   POST /api/patient/submit-review
  */
+/**
+ * @desc    Submit for Second Opinion (Atomic Transaction)
+ */
 exports.submitReview = async (req, res) => {
   const { reportIds } = req.body;
   const patientId = req.user._id;
@@ -84,14 +91,12 @@ exports.submitReview = async (req, res) => {
     return res.status(400).json({ success: false, message: "Please select at least one report." });
   }
 
-  // 🟢 ATOMIC TRANSACTION
   const session = await mongoose.startSession();
 
   try {
     let newCaseId;
 
     await session.withTransaction(async () => {
-      // 1. Verify Ownership within session
       const ownedRecords = await MedicalRecord.find({
         _id: { $in: reportIds },
         userId: patientId 
@@ -101,7 +106,6 @@ exports.submitReview = async (req, res) => {
         throw new Error("UNAUTHORIZED_ACCESS");
       }
 
-      // 2. Create the Review Case
       const newCase = new ReviewCase({
         patientId: patientId,
         recordIds: reportIds,
@@ -111,7 +115,6 @@ exports.submitReview = async (req, res) => {
       await newCase.save({ session });
       newCaseId = newCase._id;
 
-      // 3. Mark records as "Under Review"
       await MedicalRecord.updateMany(
         { _id: { $in: reportIds } },
         { $set: { status: 'UNDER_REVIEW', submittedAt: new Date() } },
@@ -119,7 +122,17 @@ exports.submitReview = async (req, res) => {
       );
     });
 
-    // 4. Trigger AI Background Task (Outside transaction)
+    // 🟢 1. Real-time Socket Update
+    // Informs online doctors that a new case has entered the AI pipeline
+    if (global.io) {
+      global.io.to('doctor').emit('new_case_submitted', {
+        caseId: newCaseId,
+        patientName: req.user.name,
+        status: 'AI_PROCESSING'
+      });
+    }
+
+    // 2. Trigger AI Background Task
     aiService.analyzeReports(newCaseId);
 
     res.status(200).json({ 
