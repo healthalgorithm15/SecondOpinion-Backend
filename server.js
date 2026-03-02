@@ -35,10 +35,13 @@ global.io = io;
 
 app.use(cors());
 app.use(express.json());
-app.get('/home', (req, res) => {
-  res.json({ message: "Welcome to the Second Opinion Home API" });
+app.get('/', (req, res) => {
+  res.json({ 
+    success: true, 
+    message: "Backend is officially LIVE",
+    env: config.env 
+  });
 });
-
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
