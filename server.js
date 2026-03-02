@@ -35,6 +35,9 @@ global.io = io;
 
 app.use(cors());
 app.use(express.json());
+app.get('/home', (req, res) => {
+  res.json({ message: "Welcome to the Second Opinion Home API" });
+});
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -75,6 +78,7 @@ io.on('connection', (socket) => {
 const PORT = config.port;
 
 // 🟢 5. CRITICAL: Change app.listen to server.listen
+
 server.listen(PORT, () => {
   console.log(`🚀 Server running in ${config.env} mode on port ${PORT}`);
   console.log(`📡 WebSockets enabled`);
