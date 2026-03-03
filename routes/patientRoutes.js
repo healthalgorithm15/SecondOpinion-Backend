@@ -1,4 +1,5 @@
 const express = require('express');
+
 const router = express.Router();
 const { 
     getDashboard, 
@@ -6,7 +7,8 @@ const {
     viewLocalFile,
     submitReview,
     getCaseStatus,
-    getReviewHistory // 🚀 Added to track AI progress for Step 3
+    getReviewHistory,
+    deleteRecord // 🚀 Added to track AI progress for Step 3
 } = require('../controllers/patientController');
 const reportController = require('../controllers/reportController');
 
@@ -58,6 +60,6 @@ router.get('/view/:id', apiLimiter, viewLocalFile);
 router.get('/case/pdf-ai/:caseId', protect, reportController.getAIAnalysisPDF);
 router.get('/case/pdf-doctor/:caseId', protect, reportController.getDoctorReviewPDF);
 router.get('/history', apiLimiter, getReviewHistory);
-router.delete('/record/:id', authMiddleware, patientController.deleteRecord);
+router.delete('/record/:id', protect, deleteRecord);
 
 module.exports = router;
