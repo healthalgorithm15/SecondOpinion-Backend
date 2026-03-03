@@ -267,3 +267,33 @@ exports.viewLocalFile = async (req, res) => {
     res.status(500).json({ success: false, message: "Error loading file." });
   }
 };
+
+/**
+ * @desc    Delete Medical Record
+ * @route   DELETE /api/patient/record/:id
+ */
+exports.deleteRecord = async (req, res) => {
+  try {
+    const record = await MedicalRecord.findById(req.params.id);
+
+    if (!record) {
+      return res.status(404).json({ success: false, message: "Record not found." });
+    }
+
+    // 🛡️ Security: Check if the record belongs to the logged-in user
+    if (record.userId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: "Unauthorized to delete this record." });
+    }
+
+    // Remove from MongoDB
+    await MedicalRecord.findByIdAndDelete(req.params.id);
+
+    res.status(200).json({ 
+      success: true, 
+      message: "Record deleted successfully." 
+    });
+  } catch (error) {
+    console.error("Delete Error:", error);
+    res.status(500).json({ success: false, message: "Failed to delete record." });
+  }
+};

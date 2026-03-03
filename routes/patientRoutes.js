@@ -58,5 +58,6 @@ router.get('/view/:id', apiLimiter, viewLocalFile);
 router.get('/case/pdf-ai/:caseId', protect, reportController.getAIAnalysisPDF);
 router.get('/case/pdf-doctor/:caseId', protect, reportController.getDoctorReviewPDF);
 router.get('/history', apiLimiter, getReviewHistory);
+router.delete('/record/:id', authMiddleware, patientController.deleteRecord);
 
 module.exports = router;

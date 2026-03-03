@@ -3,6 +3,7 @@ const { GoogleGenAI } = require("@google/genai"); // 2026 SDK
 const fs = require('fs');
 const path = require('path');
 
+const PDFDocument = require('pdfkit');
 /**
  * Helper to clean Markdown formatting from AI responses
  */
@@ -19,7 +20,7 @@ async function runProductionTest() {
   try {
     // 2. Load Sample File (Simulating MongoDB Buffer)
     // Make sure 'sample-report.jpg' exists in your /scripts folder!
-    const filePath = path.join(__dirname, 'ecg.jpg'); 
+    const filePath = path.join(__dirname, 'sample_test6.jpeg'); 
     
     if (!fs.existsSync(filePath)) {
       throw new Error(`File not found at ${filePath}. Please add an image to test.`);
@@ -63,14 +64,31 @@ async function runProductionTest() {
     });
 
     // 4. Clean and Parse the result
-    const rawResponse = result.text;
-    const sanitizedJSON = cleanJSON(rawResponse);
-    const finalData = JSON.parse(sanitizedJSON);
+    const responseText = result.text || result.response?.text || (typeof result === 'string' ? result : "");
+    
+    if (!responseText) {
+       console.log("Full Result Debug:", JSON.stringify(result, null, 2));
+       throw new Error("AI returned an empty response or structure is different.");
+    }
+    const aiData = JSON.parse(responseText);
 
-    console.log("✅ SUCCESS! AI Structured Data:");
-    console.log("--------------------------------");
-    console.table(finalData); // Neat table view in console
-    console.log("--------------------------------");
+    // 3. PDF Generation
+    const doc = new PDFDocument();
+    const outputName = `Analysis_${Date.now()}.pdf`;
+    doc.pipe(fs.createWriteStream(path.join(__dirname, outputName)));
+
+    // PDF Content
+    doc.fontSize(20).text('MEDICAL REPORT SUMMARY', { align: 'center' });
+    doc.moveDown();
+    doc.fontSize(12).text(`Risk Level: ${aiData.riskLevel}`, { 
+      color: aiData.riskLevel === 'High' ? 'red' : 'black' 
+    });
+    doc.moveDown().text(`Summary: ${aiData.summary}`);
+    doc.moveDown().text('Key Markers:');
+    aiData.markers.forEach(m => doc.text(`- ${m}`));
+    
+    doc.end();
+    console.log(`✅ Success! PDF created: ${outputName}`);
 
   } catch (error) {
     console.error("❌ TEST FAILED:");
