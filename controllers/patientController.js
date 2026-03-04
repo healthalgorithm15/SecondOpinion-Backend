@@ -238,7 +238,7 @@ exports.viewLocalFile = async (req, res) => {
     let isAuthorizedDoctor = false;
     if (req.user.role === 'doctor') {
       const associatedCase = await ReviewCase.findOne({
-        recordIds: record._id,
+        recordIds: { $in: [record._id] },
         $or: [{ doctorId: userId }, { status: 'PENDING_DOCTOR' }]
       });
       if (associatedCase) isAuthorizedDoctor = true;

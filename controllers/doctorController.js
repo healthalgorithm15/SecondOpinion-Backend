@@ -10,7 +10,7 @@ exports.getPendingCases = async (req, res) => {
   try {
     // 🛡️ Projection: Only fetch summary data for the queue to save RAM
     const cases = await ReviewCase.find({ status: 'PENDING_DOCTOR' })
-      .select('status aiAnalysis createdAt patientId') 
+      .select('status aiAnalysis createdAt patientId recordIds') 
       .populate('patientId', 'name age gender') 
       .sort({ 'aiAnalysis.riskLevel': -1, createdAt: 1 }) // High risk prioritized
       .lean();
