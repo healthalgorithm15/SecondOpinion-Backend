@@ -233,6 +233,10 @@ exports.getReviewHistory = async (req, res) => {
  * @desc    Stream File Content Securely
  * @route   GET /api/patient/view/:id
  */
+/**
+ * @desc    Stream File Content Securely
+ * @route   GET /api/patient/view/:id
+ */
 exports.viewLocalFile = async (req, res) => {
   try {
     const record = await MedicalRecord.findById(req.params.id);
@@ -240,6 +244,8 @@ exports.viewLocalFile = async (req, res) => {
       return res.status(404).json({ success: false, message: "Record not found." });
     }
 
+    // 🛡️ Note: req.user is populated by the updated protect middleware 
+    // which now checks both headers AND req.query.token
     const userId = req.user._id.toString();
     const isOwner = record.userId.toString() === userId;
     
@@ -256,10 +262,16 @@ exports.viewLocalFile = async (req, res) => {
       return res.status(403).json({ success: false, message: "Access denied." });
     }
 
+    // 🟢 Enhanced Headers for Browser & Webview Compatibility
     res.set({
       'Content-Type': record.contentType,
-      'Cache-Control': 'private, max-age=3600' 
+      // 'inline' allows the browser to show the PDF instead of force-downloading it
+      'Content-Disposition': `inline; filename="${record.fileName || 'document'}"`,
+      'Cache-Control': 'private, max-age=3600',
+      // Security: Prevent other sites from embedding your medical files
+      'X-Frame-Options': 'SAMEORIGIN' 
     });
+
     res.send(record.fileData);
 
   } catch (error) {

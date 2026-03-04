@@ -4,14 +4,18 @@ const Blacklist = require('../models/BlackList');
 
 /**
  * 🛡️ 1. Protect Middleware
- * Verifies the JWT Token and attaches the user to the request object.
+ * Verifies the JWT Token from Headers or Query String
  */
 exports.protect = async (req, res, next) => {
   let token;
 
-  // Check for token in headers
+  // 1. Check for token in headers (Standard for Mobile/API)
   if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
     token = req.headers.authorization.split(' ')[1];
+  } 
+  // 2. Fallback: Check for token in URL query (Required for Web iframes)
+  else if (req.query.token) {
+    token = req.query.token;
   }
 
   if (!token) {
@@ -19,7 +23,7 @@ exports.protect = async (req, res, next) => {
   }
 
   try {
-    // Check if token is blacklisted (useful for logout logic)
+    // Check if token is blacklisted
     const isBlacklisted = await Blacklist.findOne({ token });
     if (isBlacklisted) {
       return res.status(401).json({ success: false, message: 'Session expired' });
@@ -45,8 +49,6 @@ exports.protect = async (req, res, next) => {
 
 /**
  * 🛡️ 2. Authorize Middleware
- * Restricts access to specific roles (e.g., 'admin', 'doctor')
- * Usage: authorize('admin') or authorize('admin', 'doctor')
  */
 exports.authorize = (...roles) => {
   return (req, res, next) => {
