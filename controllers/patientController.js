@@ -6,15 +6,14 @@ const config = require('../config');
 const mongoose = require('mongoose');
 const { Expo } = require('expo-server-sdk');
 
-
 const expo = new Expo();
+
 /**
  * @desc    Get Patient Dashboard
  * @route   GET /api/patient/dashboard
  */
 exports.getDashboard = async (req, res) => {
   try {
-    // 🛡️ Security: select() excludes heavy fileData buffers to keep the response light
     const reports = await MedicalRecord.find({ userId: req.user._id })
       .select('title status category reportDate createdAt') 
       .sort({ createdAt: -1 })
@@ -80,9 +79,6 @@ exports.uploadRecord = async (req, res) => {
  * @desc    Submit for Second Opinion (Atomic Transaction)
  * @route   POST /api/patient/submit-review
  */
-/**
- * @desc    Submit for Second Opinion (Atomic Transaction)
- */
 exports.submitReview = async (req, res) => {
   const { reportIds } = req.body;
   const patientId = req.user._id;
@@ -122,8 +118,6 @@ exports.submitReview = async (req, res) => {
       );
     });
 
-    // 🟢 1. Real-time Socket Update
-    // Informs online doctors that a new case has entered the AI pipeline
     if (global.io) {
       global.io.to('doctor').emit('new_case_submitted', {
         caseId: newCaseId,
@@ -132,7 +126,6 @@ exports.submitReview = async (req, res) => {
       });
     }
 
-    // 2. Trigger AI Background Task
     aiService.analyzeReports(newCaseId);
 
     res.status(200).json({ 
@@ -170,7 +163,6 @@ exports.getCaseStatus = async (req, res) => {
       return res.status(404).json({ success: false, message: "Case not found." });
     }
 
-    // Security check: Ensure patient owns this case
     if (patientCase.patientId.toString() !== req.user._id.toString()) {
       return res.status(403).json({ success: false, message: "Unauthorized access." });
     }
@@ -233,10 +225,6 @@ exports.getReviewHistory = async (req, res) => {
  * @desc    Stream File Content Securely
  * @route   GET /api/patient/view/:id
  */
-/**
- * @desc    Stream File Content Securely
- * @route   GET /api/patient/view/:id
- */
 exports.viewLocalFile = async (req, res) => {
   try {
     const record = await MedicalRecord.findById(req.params.id);
@@ -244,8 +232,6 @@ exports.viewLocalFile = async (req, res) => {
       return res.status(404).json({ success: false, message: "Record not found." });
     }
 
-    // 🛡️ Note: req.user is populated by the updated protect middleware 
-    // which now checks both headers AND req.query.token
     const userId = req.user._id.toString();
     const isOwner = record.userId.toString() === userId;
     
@@ -262,13 +248,11 @@ exports.viewLocalFile = async (req, res) => {
       return res.status(403).json({ success: false, message: "Access denied." });
     }
 
-    // 🟢 Enhanced Headers for Browser & Webview Compatibility
+    // 🟢 UPDATED HEADERS: Prevents the 'view' download prompt on mobile
     res.set({
       'Content-Type': record.contentType,
-      // 'inline' allows the browser to show the PDF instead of force-downloading it
       'Content-Disposition': `inline; filename="${record.fileName || 'document'}"`,
       'Cache-Control': 'private, max-age=3600',
-      // Security: Prevent other sites from embedding your medical files
       'X-Frame-Options': 'SAMEORIGIN' 
     });
 
@@ -292,12 +276,10 @@ exports.deleteRecord = async (req, res) => {
       return res.status(404).json({ success: false, message: "Record not found." });
     }
 
-    // 🛡️ Security: Check if the record belongs to the logged-in user
     if (record.userId.toString() !== req.user._id.toString()) {
       return res.status(403).json({ success: false, message: "Unauthorized to delete this record." });
     }
 
-    // Remove from MongoDB
     await MedicalRecord.findByIdAndDelete(req.params.id);
 
     res.status(200).json({ 
