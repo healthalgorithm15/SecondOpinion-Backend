@@ -8,17 +8,27 @@ const mongoose = require('mongoose');
  */
 exports.getPendingCases = async (req, res) => {
   try {
-    // 🛡️ Projection: Only fetch summary data for the queue to save RAM
     const cases = await ReviewCase.find({ status: 'PENDING_DOCTOR' })
       .select('status aiAnalysis createdAt patientId recordIds') 
       .populate('patientId', 'name age gender') 
-      .sort({ 'aiAnalysis.riskLevel': -1, createdAt: 1 }) // High risk prioritized
+      // 🚀 Optimized populate to ensure contentType is always sent for UI icons
+      .populate({
+        path: 'recordIds',
+        select: 'contentType title'
+      }) 
+      .sort({ 'aiAnalysis.riskLevel': -1, createdAt: 1 }) 
       .lean();
+
+    // Filter out any potential nulls if a medical record was deleted but case reference remained
+    const sanitizedCases = cases.map(c => ({
+      ...c,
+      recordIds: c.recordIds.filter(r => r !== null)
+    }));
 
     res.status(200).json({
       success: true,
-      count: cases.length,
-      data: cases
+      count: sanitizedCases.length,
+      data: sanitizedCases
     });
   } catch (error) {
     console.error("❌ Fetch Pending Error:", error);
@@ -28,15 +38,14 @@ exports.getPendingCases = async (req, res) => {
 
 /**
  * @desc    Get details for a specific case
- * @route   GET /api/doctor/case/:caseId
  */
 exports.getCaseById = async (req, res) => {
   try {
     const caseData = await ReviewCase.findById(req.params.caseId)
       .populate('patientId', 'name age gender')
-      // 🛡️ Security: select() avoids loading massive fileData buffers into RAM here
       .populate({
         path: 'recordIds',
+        // 🛡️ Added 'fileSize' or other metadata if needed for the doctor's info
         select: 'title category reportDate fileType contentType' 
       }) 
       .lean();

@@ -71,7 +71,7 @@ exports.getDoctorReviewPDF = async (req, res) => {
         const { caseId } = req.params;
 
         // Populate doctorId to get their name from the User collection
-        const reviewData = await ReviewCase.findById(caseId).populate('doctorId', 'name');
+        const reviewData = await ReviewCase.findById(caseId).populate('doctorId', 'name').populate('patientId', 'name');
 
         if (!reviewData) {
             return res.status(404).json({ success: false, message: 'Case not found.' });
