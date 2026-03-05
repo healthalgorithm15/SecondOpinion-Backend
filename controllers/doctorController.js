@@ -1,37 +1,41 @@
 const ReviewCase = require('../models/ReviewCase');
 const MedicalRecord = require('../models/MedicalRecord');
-const { Expo } = require('expo-server-sdk');
-const expo = new Expo();
 const mongoose = require('mongoose');
 
+/**
+ * 🔔 IMPORT CENTRALIZED NOTIFICATION HELPER
+ * This ensures that when a doctor submits an opinion, 
+ * the high-priority push notification logic is triggered.
+ */
+const caseController = require('./caseController'); 
 
 /**
  * @desc    Get all cases awaiting specialist review
  * @route   GET /api/doctor/pending-cases
+ * @access  Private (Doctor Only)
  */
 exports.getPendingCases = async (req, res) => {
   try {
     const cases = await ReviewCase.find({ status: 'PENDING_DOCTOR' })
       .select('status aiAnalysis createdAt patientId recordIds') 
       .populate('patientId', 'name age gender') 
-      // 🚀 Optimized populate to ensure contentType is always sent for UI icons
-      .populate({
-        path: 'recordIds',
-        select: 'contentType title'
+      .populate({ 
+        path: 'recordIds', 
+        select: 'contentType title' 
       }) 
       .sort({ 'aiAnalysis.riskLevel': -1, createdAt: 1 }) 
       .lean();
 
-    // Filter out any potential nulls if a medical record was deleted but case reference remained
+    // Remove any null records in case a file was deleted but the reference remained
     const sanitizedCases = cases.map(c => ({
       ...c,
-      recordIds: c.recordIds.filter(r => r !== null)
+      recordIds: (c.recordIds || []).filter(r => r !== null)
     }));
 
-    res.status(200).json({
-      success: true,
-      count: sanitizedCases.length,
-      data: sanitizedCases
+    res.status(200).json({ 
+      success: true, 
+      count: sanitizedCases.length, 
+      data: sanitizedCases 
     });
   } catch (error) {
     console.error("❌ Fetch Pending Error:", error);
@@ -40,15 +44,15 @@ exports.getPendingCases = async (req, res) => {
 };
 
 /**
- * @desc    Get details for a specific case
+ * @desc    Get details for a specific case including all medical records
+ * @route   GET /api/doctor/case/:caseId
  */
 exports.getCaseById = async (req, res) => {
   try {
     const caseData = await ReviewCase.findById(req.params.caseId)
       .populate('patientId', 'name age gender')
-      .populate({
-        path: 'recordIds',
-        // 🛡️ Added 'fileSize' or other metadata if needed for the doctor's info
+      .populate({ 
+        path: 'recordIds', 
         select: 'title category reportDate fileType contentType' 
       }) 
       .lean();
@@ -57,10 +61,7 @@ exports.getCaseById = async (req, res) => {
       return res.status(404).json({ success: false, message: "Case not found." });
     }
 
-    res.status(200).json({
-      success: true,
-      data: caseData
-    });
+    res.status(200).json({ success: true, data: caseData });
   } catch (error) {
     console.error("❌ Get Case Detail Error:", error);
     res.status(500).json({ success: false, message: "Error loading case details." });
@@ -74,13 +75,14 @@ exports.getCaseById = async (req, res) => {
 exports.submitOpinion = async (req, res) => {
   const { caseId, diagnosis, summary, finalVerdict, recommendations } = req.body;
 
+  // Support both legacy naming and updated naming conventions
   const verdictValue = (finalVerdict || diagnosis)?.trim();
   const notesValue = (recommendations || summary)?.trim();
 
   if (!verdictValue || !notesValue) {
     return res.status(400).json({ 
       success: false, 
-      message: "Please provide both a final verdict and clinical recommendations." 
+      message: "Both a final verdict and clinical recommendations are required." 
     });
   }
 
@@ -92,10 +94,10 @@ exports.submitOpinion = async (req, res) => {
         { _id: caseId, status: { $ne: 'COMPLETED' } },
         {
           doctorId: req.user._id, 
-          doctorOpinion: {
-            finalVerdict: verdictValue,
-            recommendations: notesValue,
-            reviewedAt: new Date()
+          doctorOpinion: { 
+            finalVerdict: verdictValue, 
+            recommendations: notesValue, 
+            reviewedAt: new Date() 
           },
           status: 'COMPLETED'
         },
@@ -106,6 +108,7 @@ exports.submitOpinion = async (req, res) => {
         throw new Error("CASE_NOT_FOUND_OR_FINALIZED");
       }
 
+      // Mark all associated records as completed/archived
       await MedicalRecord.updateMany(
         { _id: { $in: updatedCase.recordIds } },
         { $set: { status: 'COMPLETED' } },
@@ -113,13 +116,15 @@ exports.submitOpinion = async (req, res) => {
       );
     });
 
-    // 🏆 THE LOOP CLOSER 
-    // We call this AFTER the transaction is successful
-    notifyPatientReportReady(caseId); 
+    /**
+     * 🏆 TRIGGER PATIENT NOTIFICATION
+     * Using the high-priority helper from caseController to wake the patient's device.
+     */
+    caseController.notifyPatientReportReady(caseId); 
 
     res.status(200).json({ 
       success: true, 
-      message: "Medical opinion submitted. The patient has been notified." 
+      message: "Medical opinion submitted successfully. The patient has been notified." 
     });
 
   } catch (error) {
@@ -135,7 +140,7 @@ exports.submitOpinion = async (req, res) => {
 };
 
 /**
- * @desc    Get all cases completed by the doctor (Paginated)
+ * @desc    Get all cases completed by the current doctor (Paginated)
  * @route   GET /api/doctor/history
  */
 exports.getDoctorHistory = async (req, res) => {
@@ -150,7 +155,7 @@ exports.getDoctorHistory = async (req, res) => {
     };
 
     const cases = await ReviewCase.find(query)
-      .select('patientId doctorOpinion updatedAt status') // 🛡️ Projections for speed
+      .select('patientId doctorOpinion updatedAt status')
       .populate('patientId', 'name')
       .sort({ updatedAt: -1 })
       .skip(skip)
@@ -159,50 +164,17 @@ exports.getDoctorHistory = async (req, res) => {
 
     const total = await ReviewCase.countDocuments(query);
 
-    res.status(200).json({
-      success: true,
-      data: cases,
-      pagination: {
-        total,
-        page,
-        pages: Math.ceil(total / limit)
+    res.status(200).json({ 
+      success: true, 
+      data: cases, 
+      pagination: { 
+        total, 
+        page, 
+        pages: Math.ceil(total / limit) 
       }
     });
   } catch (error) {
     console.error("❌ History Error:", error);
-    res.status(500).json({ success: false, message: "Error fetching history." });
-  }
-};
-
-/**
- * 🔵 INTERNAL HELPER: Notify Patient
- */
-const notifyPatientReportReady = async (caseId) => {
-  try {
-    // Populate patientId to get the pushToken
-    const updatedCase = await ReviewCase.findById(caseId).populate('patientId', 'pushToken name');
-    const patient = updatedCase.patientId;
-
-    if (!patient || !patient.pushToken || !Expo.isExpoPushToken(patient.pushToken)) {
-      console.log("No valid push token for patient. skipping notification.");
-      return;
-    }
-
-    const message = {
-      to: patient.pushToken,
-      sound: 'default',
-      title: 'Medical Report Ready! ✅',
-      body: `Hi ${patient.name.split(' ')[0]}, your specialist review is now available.`,
-      data: { caseId: updatedCase._id, screen: 'case-summary' },
-      priority: 'high'
-    };
-
-    let chunks = expo.chunkPushNotifications([message]);
-    for (let chunk of chunks) {
-      await expo.sendPushNotificationsAsync(chunk);
-    }
-    console.log(`✅ Notification sent to patient: ${patient.name}`);
-  } catch (error) {
-    console.error("❌ Patient Notification Error:", error);
+    res.status(500).json({ success: false, message: "Error fetching clinical history." });
   }
 };

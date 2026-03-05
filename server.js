@@ -1,8 +1,8 @@
 const config = require('./config'); 
 const cors = require('cors');
 const express = require('express');
-const http = require('http'); // 🟢 Added for WebSockets
-const { Server } = require('socket.io'); // 🟢 Added
+const http = require('http'); 
+const { Server } = require('socket.io'); 
 const connectDB = require('./config/db');
 const User = require('./models/User');
 
@@ -13,28 +13,27 @@ const patientRoutes = require('./routes/patientRoutes');
 const doctorRoutes = require('./routes/doctorRoutes');
 const reportRoutes = require('./routes/reportRoutes');
 
-// Connect to Database
 connectDB();
 
 const app = express();
-
-// 🟢 1. Create HTTP Server
 const server = http.createServer(app);
 
-// 🟢 2. Initialize Socket.io
+// Initialize Socket.io with enhanced settings for Cloud Environments
 const io = new Server(server, {
   cors: {
-    origin: "*", // In production, replace with your frontend URL
+    origin: "*", 
     methods: ["GET", "POST"]
-  }
+  },
+  pingTimeout: 60000, // Handle potential Azure idle timeouts
+  pingInterval: 25000,
+  transports: ['websocket', 'polling'] // Allow fallback if websocket fails
 });
 
-// 🟢 3. Make 'io' globally accessible to your controllers
-// This allows you to call global.io.emit() inside your routes
 global.io = io;
 
 app.use(cors());
 app.use(express.json());
+
 app.get('/', (req, res) => {
   res.json({ 
     success: true, 
@@ -42,47 +41,43 @@ app.get('/', (req, res) => {
     env: config.env 
   });
 });
-// Routes
+
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/patient', patientRoutes);
 app.use('/api/doctor', doctorRoutes);
 app.use('/api/reports', reportRoutes);
 
-// 🟢 4. Basic Socket Connection Logic
+// Socket Logic
 io.on('connection', (socket) => {
-  console.log('⚡ New Connection:', socket.id); 
+  console.log(`⚡ Connection Established: ${socket.id}`); 
 
-  // This event "links" the socket to the logged-in user
   socket.on('joinRoom', async (data) => {
-    const { userId, role } = data; // Data from frontend
+    const { userId, role } = data;
     
-    socket.join(role);
-    console.log(`👤 User ${userId} joined room: ${role}`);
+    if (role) {
+      socket.join(role);
+      console.log(`👤 User ${userId} (Role: ${role}) joined their room.`);
+    }
 
-    // 🟢 UPDATE DATABASE: Save the socketId to the User document
     if (userId) {
       try {
         await User.findByIdAndUpdate(userId, { socketId: socket.id });
-        console.log(`✅ DB Success: Linked Socket ${socket.id} to User ${userId}`);
       } catch (err) {
-        console.error('❌ DB Update Error:', err);
+        console.error('❌ Socket DB Link Error:', err);
       }
     }
   });
 
-  socket.on('disconnect', async () => {
-    // 🔴 CLEANUP: Clear the socketId when they go offline
+  socket.on('disconnect', async (reason) => {
+    console.log(`🔌 Disconnected: ${socket.id} (Reason: ${reason})`);
     await User.findOneAndUpdate({ socketId: socket.id }, { socketId: null });
-    console.log('🔌 User disconnected');
   });
 });
 
-const PORT = config.port;
-
-// 🟢 5. CRITICAL: Change app.listen to server.listen
+const PORT = config.port || 8080; // Azure typically injects a port, but 8080 is common for containers
 
 server.listen(PORT, () => {
-  console.log(`🚀 Server running in ${config.env} mode on port ${PORT}`);
-  console.log(`📡 WebSockets enabled`);
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`📡 WebSocket Engine active`);
 });

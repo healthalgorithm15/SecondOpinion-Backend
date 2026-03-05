@@ -122,3 +122,8 @@ exports.getDoctorReviewPDF = async (req, res) => {
         res.status(500).send('Error generating Specialist PDF');
     }
 };
+
+module.exports = {
+    getAIAnalysisPDF: exports.getAIAnalysisPDF,
+    getDoctorReviewPDF: exports.getDoctorReviewPDF
+};

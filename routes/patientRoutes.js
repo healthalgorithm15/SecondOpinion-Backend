@@ -10,7 +10,7 @@ const {
     getReviewHistory,
     deleteRecord // 🚀 Added to track AI progress for Step 3
 } = require('../controllers/patientController');
-const reportController = require('../controllers/reportController');
+const { getAIAnalysisPDF,getDoctorReviewPDF } = require('../controllers/reportController');
 
 // 🛡️ Middleware imports
 const { protect } = require('../middleware/authMiddleware'); 
@@ -57,8 +57,8 @@ router.get('/case/:caseId', apiLimiter, getCaseStatus);
  * Streams the binary file from MongoDB
  */
 router.get('/view/:id', apiLimiter, viewLocalFile);
-router.get('/case/pdf-ai/:caseId', protect, reportController.getAIAnalysisPDF);
-router.get('/case/pdf-doctor/:caseId', protect, reportController.getDoctorReviewPDF);
+router.get('/case/pdf-ai/:caseId', protect, getAIAnalysisPDF);
+router.get('/case/pdf-doctor/:caseId', protect, getDoctorReviewPDF);
 router.get('/history', apiLimiter, getReviewHistory);
 router.delete('/record/:id', protect, deleteRecord);
 

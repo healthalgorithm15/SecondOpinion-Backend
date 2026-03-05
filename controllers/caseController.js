@@ -13,10 +13,9 @@ exports.startCaseAnalysis = async (req, res) => {
     await ReviewCase.findByIdAndUpdate(caseId, { status: 'PROCESSING' });
 
     // 2. 🚀 FIRE AND FORGET
-    // Notice there is NO 'await' here. The AI starts in the background.
+    // aiService.analyzeReports must call notifyDoctorCaseReady when finished
     aiService.analyzeReports(caseId);
 
-    // 3. Respond to Mobile App immediately
     res.status(200).json({ success: true, message: "Analysis started" });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -24,14 +23,15 @@ exports.startCaseAnalysis = async (req, res) => {
 };
 
 /**
- * 🟢 NEW HELPER: This logic should be called by your aiService 
- * or added here if you handle the status transition manually.
+ * 🟢 NOTIFY DOCTOR: AI Analysis Complete
+ * Optimized for FCM V1 Background Delivery
  */
 exports.notifyDoctorCaseReady = async (caseId) => {
   try {
     const updatedCase = await ReviewCase.findById(caseId).populate('patientId', 'name');
+    if (!updatedCase) return;
     
-    // 🟢 1. Socket Emit (For doctors currently using the app)
+    // 1. Socket Emit (Real-time dashboard)
     if (global.io) {
       global.io.to('doctor').emit('case_ready_for_review', {
         caseId: updatedCase._id,
@@ -39,7 +39,7 @@ exports.notifyDoctorCaseReady = async (caseId) => {
       });
     }
 
-    // 🟢 2. Push Notification (For doctors with the app closed)
+    // 2. Push Notification (Background delivery)
     const doctors = await User.find({ role: 'doctor', pushToken: { $ne: null } });
     let messages = [];
 
@@ -49,8 +49,10 @@ exports.notifyDoctorCaseReady = async (caseId) => {
         to: doc.pushToken,
         sound: 'default',
         title: 'Action Required: New Case 🩺',
-        body: `AI analysis complete for ${updatedCase.patientId?.name}. Ready for your review.`,
-        data: { caseId: updatedCase._id },
+        body: `AI analysis complete for ${updatedCase.patientId?.name}. Ready for review.`,
+        data: { caseId: updatedCase._id, role: 'doctor' },
+        priority: 'high', // Wakes up device
+        channelId: 'default'
       });
     }
 
@@ -60,20 +62,18 @@ exports.notifyDoctorCaseReady = async (caseId) => {
         await expo.sendPushNotificationsAsync(chunk);
       }
     }
+    console.log(`✅ Doctor notifications sent for Case: ${caseId}`);
   } catch (error) {
     console.error("Notification Error:", error);
   }
 };
 
 /**
- * 🔵 NEW HELPER: Notify Patient that Specialist Review is Complete
- * Call this inside the controller where the doctor saves the final verdict.
+ * 🔵 NOTIFY PATIENT: Specialist Review Complete
  */
 exports.notifyPatientReportReady = async (caseId) => {
   try {
-    // 1. Get the case and populate the patient's pushToken
-    const updatedCase = await ReviewCase.findById(caseId).populate('patientId');
-    
+    const updatedCase = await ReviewCase.findById(caseId).populate('patientId', 'pushToken name');
     const patient = updatedCase.patientId;
 
     if (!patient || !patient.pushToken || !Expo.isExpoPushToken(patient.pushToken)) {
@@ -81,25 +81,20 @@ exports.notifyPatientReportReady = async (caseId) => {
       return;
     }
 
-    // 2. Prepare the Message
     const message = {
       to: patient.pushToken,
       sound: 'default',
       title: 'Medical Report Ready! ✅',
-      body: `Your specialist review for Case #${caseId.slice(-6).toUpperCase()} is now available for viewing.`,
-      data: { 
-        caseId: updatedCase._id, 
-        screen: 'case-summary' // This tells the app where to go on tap
-      },
-      priority: 'high'
+      body: `Hi ${patient.name.split(' ')[0]}, your specialist review is now available for viewing.`,
+      data: { caseId: updatedCase._id, screen: 'case-summary' },
+      priority: 'high',
+      channelId: 'default'
     };
 
-    // 3. Send via Expo SDK
     let chunks = expo.chunkPushNotifications([message]);
     for (let chunk of chunks) {
       await expo.sendPushNotificationsAsync(chunk);
     }
-
     console.log(`✅ Notification sent to patient: ${patient.name}`);
   } catch (error) {
     console.error("❌ Patient Notification Error:", error);

@@ -1,23 +1,19 @@
 const MedicalRecord = require('../models/MedicalRecord');
-const User = require('../models/User');
 const ReviewCase = require('../models/ReviewCase');
 const aiService = require('../services/aiService');
 const config = require('../config');
 const mongoose = require('mongoose');
-const { Expo } = require('expo-server-sdk');
-
-const expo = new Expo();
 
 /**
- * @desc    Get Patient Dashboard
+ * @desc    Get Patient Dashboard (Reports & Stats)
  * @route   GET /api/patient/dashboard
  */
 exports.getDashboard = async (req, res) => {
   try {
     const reports = await MedicalRecord.find({ userId: req.user._id })
-      .select('title status category reportDate createdAt') 
+      .select('title status category reportDate createdAt')
       .sort({ createdAt: -1 })
-      .limit(50) 
+      .limit(50)
       .lean();
 
     const formattedReports = reports.map(r => ({
@@ -25,14 +21,14 @@ exports.getDashboard = async (req, res) => {
       displayUrl: `${config.appUrl}/api/patient/view/${r._id}`
     }));
 
-    res.status(200).json({
-      success: true,
-      data: {
-        name: req.user.name,
+    res.status(200).json({ 
+      success: true, 
+      data: { 
+        name: req.user.name, 
         reports: formattedReports,
-        stats: {
-          total: reports.length,
-          underReview: reports.filter(r => r.status === 'UNDER_REVIEW').length
+        stats: { 
+          total: reports.length, 
+          underReview: reports.filter(r => r.status === 'UNDER_REVIEW').length 
         }
       }
     });
@@ -41,6 +37,66 @@ exports.getDashboard = async (req, res) => {
     res.status(500).json({ success: false, message: "Error loading dashboard." });
   }
 };
+
+/**
+ * @desc    Submit reports for Specialist Review (Atomic Transaction)
+ * @route   POST /api/patient/submit-review
+ */
+exports.submitReview = async (req, res) => {
+  const { reportIds } = req.body;
+  const session = await mongoose.startSession();
+  
+  try {
+    let newCaseId;
+    await session.withTransaction(async () => {
+      // 1. Verify ownership of records
+      const ownedRecords = await MedicalRecord.find({ 
+        _id: { $in: reportIds }, 
+        userId: req.user._id 
+      }).session(session);
+
+      if (ownedRecords.length !== reportIds.length) {
+        throw new Error("UNAUTHORIZED_ACCESS");
+      }
+
+      // 2. Create the Review Case
+      const newCase = new ReviewCase({ 
+        patientId: req.user._id, 
+        recordIds: reportIds, 
+        status: 'AI_PROCESSING' 
+      });
+      await newCase.save({ session });
+      newCaseId = newCase._id;
+
+      // 3. Update Record Statuses
+      await MedicalRecord.updateMany(
+        { _id: { $in: reportIds } }, 
+        { $set: { status: 'UNDER_REVIEW', submittedAt: new Date() } }, 
+        { session }
+      );
+    });
+
+    // 4. Socket.io Emit (For online doctors)
+    if (global.io) {
+      global.io.to('doctor').emit('new_case_submitted', { 
+        caseId: newCaseId, 
+        patientName: req.user.name 
+      });
+    }
+
+    // 5. Trigger AI Analysis (Background Task - Fire and Forget)
+    // aiService.analyzeReports will handle status transition to PENDING_DOCTOR
+    aiService.analyzeReports(newCaseId); 
+
+    res.status(200).json({ success: true, caseId: newCaseId });
+  } catch (error) {
+    console.error("Submit Review Error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  } finally {
+    session.endSession();
+  }
+};
+
 
 /**
  * @desc    Upload Medical Record
@@ -74,120 +130,85 @@ exports.uploadRecord = async (req, res) => {
     res.status(500).json({ success: false, message: "Upload failed." });
   }
 };
-
 /**
- * @desc    Submit for Second Opinion (Atomic Transaction)
- * @route   POST /api/patient/submit-review
- */
-exports.submitReview = async (req, res) => {
-  const { reportIds } = req.body;
-  const patientId = req.user._id;
-
-  if (!reportIds || !Array.isArray(reportIds) || reportIds.length === 0) {
-    return res.status(400).json({ success: false, message: "Please select at least one report." });
-  }
-
-  const session = await mongoose.startSession();
-
-  try {
-    let newCaseId;
-
-    await session.withTransaction(async () => {
-      const ownedRecords = await MedicalRecord.find({
-        _id: { $in: reportIds },
-        userId: patientId 
-      }).session(session);
-
-      if (ownedRecords.length !== reportIds.length) {
-        throw new Error("UNAUTHORIZED_ACCESS");
-      }
-
-      const newCase = new ReviewCase({
-        patientId: patientId,
-        recordIds: reportIds,
-        status: 'AI_PROCESSING'
-      });
-      
-      await newCase.save({ session });
-      newCaseId = newCase._id;
-
-      await MedicalRecord.updateMany(
-        { _id: { $in: reportIds } },
-        { $set: { status: 'UNDER_REVIEW', submittedAt: new Date() } },
-        { session }
-      );
-    });
-
-    if (global.io) {
-      global.io.to('doctor').emit('new_case_submitted', {
-        caseId: newCaseId,
-        patientName: req.user.name,
-        status: 'AI_PROCESSING'
-      });
-    }
-
-    aiService.analyzeReports(newCaseId);
-
-    res.status(200).json({ 
-      success: true, 
-      message: "Case submitted successfully!",
-      caseId: newCaseId 
-    });
-
-  } catch (error) {
-    console.error("🔥 SUBMIT ERROR:", error);
-    const isAuthError = error.message === "UNAUTHORIZED_ACCESS";
-    res.status(isAuthError ? 403 : 500).json({ 
-      success: false, 
-      message: isAuthError ? "Unauthorized access to records." : "Failed to initiate review."
-    });
-  } finally {
-    session.endSession();
-  }
-};
-
-/**
- * @desc    Get Detailed Case Status
- * @route   GET /api/patient/case/:caseId
+ * @desc    Track status of a specific case
+ * @route   GET /api/patient/case-status/:caseId
  */
 exports.getCaseStatus = async (req, res) => {
   try {
-    const { caseId } = req.params;
-
-    const patientCase = await ReviewCase.findById(caseId)
+    const patientCase = await ReviewCase.findById(req.params.caseId)
       .populate('recordIds', 'title category reportDate')
       .populate('doctorId', 'name specialization')
       .lean();
 
-    if (!patientCase) {
-      return res.status(404).json({ success: false, message: "Case not found." });
+    if (!patientCase || patientCase.patientId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: "Access denied." });
     }
 
-    if (patientCase.patientId.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ success: false, message: "Unauthorized access." });
-    }
-
-    const uiSteps = {
-      docsUploaded: true,
-      aiCompleted: patientCase.status !== 'AI_PROCESSING', 
-      doctorStarted: !!patientCase.doctorId || patientCase.status === 'COMPLETED'
+    // UI helper steps for the frontend progress bar
+    const uiSteps = { 
+      docsUploaded: true, 
+      aiCompleted: !['AI_PROCESSING', 'PROCESSING'].includes(patientCase.status), 
+      doctorStarted: !!patientCase.doctorId || patientCase.status === 'COMPLETED' 
     };
 
-    res.status(200).json({ 
-      success: true, 
-      data: { ...patientCase, uiSteps } 
-    });
-
+    res.status(200).json({ success: true, data: { ...patientCase, uiSteps } });
   } catch (error) {
-    console.error("Status Check Error:", error);
-    res.status(500).json({ success: false, message: "Server error tracking case." });
+    console.error("Get Case Status Error:", error);
+    res.status(500).json({ success: false, message: "Error tracking case." });
   }
 };
 
 /**
- * @desc    Get all cases for history screen (Paginated)
- * @route   GET /api/patient/history
+ * @desc    View Medical Document (Stream buffer to app)
+ * @route   GET /api/patient/view/:id
  */
+exports.viewLocalFile = async (req, res) => {
+  try {
+    const record = await MedicalRecord.findById(req.params.id);
+    if (!record) return res.status(404).json({ success: false, message: "Record not found." });
+
+    // Verify ownership or doctor authorization
+    const isOwner = record.userId.toString() === req.user._id.toString();
+    const isAuthorizedDoctor = req.user.role === 'doctor'; // Add more granular checks if needed
+
+    if (!isOwner && !isAuthorizedDoctor) {
+      return res.status(403).json({ success: false, message: "Access denied." });
+    }
+
+    // Set headers to display inline in mobile WebView/Browser
+    res.set({
+      'Content-Type': record.contentType,
+      'Content-Disposition': `inline; filename="${record.fileName || 'document'}"`,
+      'Cache-Control': 'private, max-age=3600'
+    });
+
+    res.send(record.fileData);
+  } catch (error) {
+    console.error("File View Error:", error);
+    res.status(500).json({ success: false, message: "Error loading file." });
+  }
+};
+
+/**
+ * @desc    Delete a record
+ * @route   DELETE /api/patient/record/:id
+ */
+exports.deleteRecord = async (req, res) => {
+  try {
+    const result = await MedicalRecord.findOneAndDelete({ 
+      _id: req.params.id, 
+      userId: req.user._id 
+    });
+
+    if (!result) return res.status(404).json({ success: false, message: "Record not found or unauthorized." });
+
+    res.status(200).json({ success: true, message: "Record deleted." });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Error deleting record." });
+  }
+};
+
 exports.getReviewHistory = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -218,76 +239,5 @@ exports.getReviewHistory = async (req, res) => {
   } catch (error) {
     console.error("History Error:", error);
     res.status(500).json({ success: false, message: "Error fetching history." });
-  }
-};
-
-/**
- * @desc    Stream File Content Securely
- * @route   GET /api/patient/view/:id
- */
-exports.viewLocalFile = async (req, res) => {
-  try {
-    const record = await MedicalRecord.findById(req.params.id);
-    if (!record) {
-      return res.status(404).json({ success: false, message: "Record not found." });
-    }
-
-    const userId = req.user._id.toString();
-    const isOwner = record.userId.toString() === userId;
-    
-    let isAuthorizedDoctor = false;
-    if (req.user.role === 'doctor') {
-      const associatedCase = await ReviewCase.findOne({
-        recordIds: { $in: [record._id] },
-        $or: [{ doctorId: userId }, { status: 'PENDING_DOCTOR' }]
-      });
-      if (associatedCase) isAuthorizedDoctor = true;
-    }
-
-    if (!isOwner && !isAuthorizedDoctor) {
-      return res.status(403).json({ success: false, message: "Access denied." });
-    }
-
-    // 🟢 UPDATED HEADERS: Prevents the 'view' download prompt on mobile
-    res.set({
-      'Content-Type': record.contentType,
-      'Content-Disposition': `inline; filename="${record.fileName || 'document'}"`,
-      'Cache-Control': 'private, max-age=3600',
-      'X-Frame-Options': 'SAMEORIGIN' 
-    });
-
-    res.send(record.fileData);
-
-  } catch (error) {
-    console.error("File View Error:", error);
-    res.status(500).json({ success: false, message: "Error loading file." });
-  }
-};
-
-/**
- * @desc    Delete Medical Record
- * @route   DELETE /api/patient/record/:id
- */
-exports.deleteRecord = async (req, res) => {
-  try {
-    const record = await MedicalRecord.findById(req.params.id);
-
-    if (!record) {
-      return res.status(404).json({ success: false, message: "Record not found." });
-    }
-
-    if (record.userId.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ success: false, message: "Unauthorized to delete this record." });
-    }
-
-    await MedicalRecord.findByIdAndDelete(req.params.id);
-
-    res.status(200).json({ 
-      success: true, 
-      message: "Record deleted successfully." 
-    });
-  } catch (error) {
-    console.error("Delete Error:", error);
-    res.status(500).json({ success: false, message: "Failed to delete record." });
   }
 };
