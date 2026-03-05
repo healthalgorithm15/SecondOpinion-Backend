@@ -1,23 +1,28 @@
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { GoogleGenAI } = require("@google/genai"); // 2026 SDK
 const ReviewCase = require('../models/ReviewCase');
-const MedicalRecord = require('../models/MedicalRecord');
-// Import the caseController to use its notification helpers
 const caseController = require('../controllers/caseController'); 
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+// Initialize with the 2026 SDK Syntax
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+const AI_CONFIG = {
+  primaryModel: "gemini-2.5-flash",
+  fallbackModel: "gemini-1.5-flash-latest", // "latest" ensures you don't hit 404s on deprecation
+};
 
 const parseAIResponse = (text) => {
   try {
     const start = text.indexOf('{');
     const end = text.lastIndexOf('}') + 1;
     if (start === -1 || end === 0) throw new Error("No JSON found");
-    return JSON.parse(text.substring(start, end));
+    const cleaned = text.substring(start, end);
+    return JSON.parse(cleaned);
   } catch (err) {
-    console.error("⚠️ AI Parsing Error:", err.message);
+    console.error("⚠️ AI Parsing Error. Raw Text:", text);
     return {
-      summary: "AI analysis completed. Manual review of documents is required.",
+      summary: "AI analysis completed. Please review documents for details.",
       riskLevel: "Medium",
-      markers: ["Extraction failed"]
+      markers: ["Extraction failed: format error"]
     };
   }
 };
@@ -26,16 +31,14 @@ exports.analyzeReports = async (caseId) => {
   console.log(`🤖 AI Service: Starting analysis for Case ${caseId}`);
 
   try {
-    const currentCase = await ReviewCase.findById(caseId)
-      .populate('recordIds')
-      .populate('patientId', 'name');
+    const currentCase = await ReviewCase.findById(caseId).populate('recordIds');
 
     if (!currentCase || !currentCase.recordIds.length) {
       console.error("❌ No records found for this case.");
       return;
     }
 
-    // 1. Prepare files for Gemini
+    // 1. Prepare Multimodal content (Images/PDFs + Prompt)
     const fileParts = currentCase.recordIds.map(record => ({
       inlineData: {
         data: record.fileData.toString("base64"),
@@ -43,18 +46,36 @@ exports.analyzeReports = async (caseId) => {
       }
     }));
 
-    const prompt = `
-      SYSTEM: Medical Data Assistant. Return ONLY JSON.
-      { "summary": "2 sentences", "riskLevel": "Low/Medium/High", "markers": ["key: value"] }
-    `;
+    const textPart = {
+      text: `SYSTEM: Medical Data Assistant. 
+             TASK: Extract summary, risk level, and markers.
+             RETURN ONLY RAW JSON.
+             { "summary": "string", "riskLevel": "Low/Medium/High", "markers": ["string"] }`
+    };
 
-    // 2. AI Generation
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-    const result = await model.generateContent([...fileParts, prompt]);
-    const response = await result.response;
-    const structuredData = parseAIResponse(response.text());
+    // 2. Execute with Fallback Reliability Logic
+    let result;
+    let structuredData;
 
-    // 3. Update Database
+    try {
+      console.log(`🧬 Attempting Primary Model: ${AI_CONFIG.primaryModel}`);
+      result = await ai.models.generateContent({
+        model: AI_CONFIG.primaryModel,
+        contents: [...fileParts, textPart]
+      });
+      structuredData = parseAIResponse(result.text);
+    } catch (primaryError) {
+      console.warn(`⚠️ Primary AI Failure: ${primaryError.message}. Switching to Fallback...`);
+      
+      // FALLBACK EXECUTION
+      result = await ai.models.generateContent({
+        model: AI_CONFIG.fallbackModel,
+        contents: [...fileParts, textPart]
+      });
+      structuredData = parseAIResponse(result.text);
+    }
+
+    // 3. Database Update (Atomic)
     await ReviewCase.findByIdAndUpdate(caseId, {
       aiAnalysis: {
         summary: structuredData.summary,
@@ -66,17 +87,19 @@ exports.analyzeReports = async (caseId) => {
       priority: structuredData.riskLevel === 'High' ? 'High' : 'Normal'
     });
 
-    console.log(`✅ AI Service: Case ${caseId} updated to PENDING_DOCTOR`);
+    console.log(`✅ AI Service: Case ${caseId} updated. Triggering Notification...`);
 
-    // 4. TRIGGER NOTIFICATIONS via CaseController
-    // This handles both Socket.io and High-Priority Push Notifications
+    // 4. Trigger Notification (Only after DB is updated)
     await caseController.notifyDoctorCaseReady(caseId);
 
   } catch (error) {
     console.error("❌ AI Service CRITICAL FAILURE:", error.message);
     
-    // Fallback so the case isn't stuck
-    await ReviewCase.findByIdAndUpdate(caseId, { status: 'PENDING_DOCTOR' });
+    // Ensure the case is never stuck in "Processing"
+    await ReviewCase.findByIdAndUpdate(caseId, { 
+        status: 'PENDING_DOCTOR',
+        'aiAnalysis.summary': 'AI Analysis failed. Please review records manually.' 
+    });
     await caseController.notifyDoctorCaseReady(caseId);
   }
 };

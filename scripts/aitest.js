@@ -20,7 +20,7 @@ async function runProductionTest() {
   try {
     // 2. Load Sample File (Simulating MongoDB Buffer)
     // Make sure 'sample-report.jpg' exists in your /scripts folder!
-    const filePath = path.join(__dirname, 'sample_test6.jpeg'); 
+    const filePath = path.join(__dirname, 'ecg.jpg'); 
     
     if (!fs.existsSync(filePath)) {
       throw new Error(`File not found at ${filePath}. Please add an image to test.`);
