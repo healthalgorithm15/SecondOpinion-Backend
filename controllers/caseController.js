@@ -64,3 +64,44 @@ exports.notifyDoctorCaseReady = async (caseId) => {
     console.error("Notification Error:", error);
   }
 };
+
+/**
+ * 🔵 NEW HELPER: Notify Patient that Specialist Review is Complete
+ * Call this inside the controller where the doctor saves the final verdict.
+ */
+exports.notifyPatientReportReady = async (caseId) => {
+  try {
+    // 1. Get the case and populate the patient's pushToken
+    const updatedCase = await ReviewCase.findById(caseId).populate('patientId');
+    
+    const patient = updatedCase.patientId;
+
+    if (!patient || !patient.pushToken || !Expo.isExpoPushToken(patient.pushToken)) {
+      console.log("No valid push token found for patient.");
+      return;
+    }
+
+    // 2. Prepare the Message
+    const message = {
+      to: patient.pushToken,
+      sound: 'default',
+      title: 'Medical Report Ready! ✅',
+      body: `Your specialist review for Case #${caseId.slice(-6).toUpperCase()} is now available for viewing.`,
+      data: { 
+        caseId: updatedCase._id, 
+        screen: 'case-summary' // This tells the app where to go on tap
+      },
+      priority: 'high'
+    };
+
+    // 3. Send via Expo SDK
+    let chunks = expo.chunkPushNotifications([message]);
+    for (let chunk of chunks) {
+      await expo.sendPushNotificationsAsync(chunk);
+    }
+
+    console.log(`✅ Notification sent to patient: ${patient.name}`);
+  } catch (error) {
+    console.error("❌ Patient Notification Error:", error);
+  }
+};

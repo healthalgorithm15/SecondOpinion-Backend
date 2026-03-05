@@ -1,6 +1,9 @@
 const ReviewCase = require('../models/ReviewCase');
 const MedicalRecord = require('../models/MedicalRecord');
+const { Expo } = require('expo-server-sdk');
+const expo = new Expo();
 const mongoose = require('mongoose');
+
 
 /**
  * @desc    Get all cases awaiting specialist review
@@ -71,7 +74,6 @@ exports.getCaseById = async (req, res) => {
 exports.submitOpinion = async (req, res) => {
   const { caseId, diagnosis, summary, finalVerdict, recommendations } = req.body;
 
-  // 1. Flexibility Logic for different frontend state naming
   const verdictValue = (finalVerdict || diagnosis)?.trim();
   const notesValue = (recommendations || summary)?.trim();
 
@@ -82,13 +84,10 @@ exports.submitOpinion = async (req, res) => {
     });
   }
 
-  // 🟢 PRODUCTION ATOMIC TRANSACTION
-  // Requires MongoDB Atlas or Local Replica Set
   const session = await mongoose.startSession();
 
   try {
     await session.withTransaction(async () => {
-      // 2. Update the Case with Doctor's findings
       const updatedCase = await ReviewCase.findOneAndUpdate(
         { _id: caseId, status: { $ne: 'COMPLETED' } },
         {
@@ -107,13 +106,16 @@ exports.submitOpinion = async (req, res) => {
         throw new Error("CASE_NOT_FOUND_OR_FINALIZED");
       }
 
-      // 3. Mark associated records as COMPLETED in bulk
       await MedicalRecord.updateMany(
         { _id: { $in: updatedCase.recordIds } },
         { $set: { status: 'COMPLETED' } },
         { session }
       );
     });
+
+    // 🏆 THE LOOP CLOSER 
+    // We call this AFTER the transaction is successful
+    notifyPatientReportReady(caseId); 
 
     res.status(200).json({ 
       success: true, 
@@ -169,5 +171,38 @@ exports.getDoctorHistory = async (req, res) => {
   } catch (error) {
     console.error("❌ History Error:", error);
     res.status(500).json({ success: false, message: "Error fetching history." });
+  }
+};
+
+/**
+ * 🔵 INTERNAL HELPER: Notify Patient
+ */
+const notifyPatientReportReady = async (caseId) => {
+  try {
+    // Populate patientId to get the pushToken
+    const updatedCase = await ReviewCase.findById(caseId).populate('patientId', 'pushToken name');
+    const patient = updatedCase.patientId;
+
+    if (!patient || !patient.pushToken || !Expo.isExpoPushToken(patient.pushToken)) {
+      console.log("No valid push token for patient. skipping notification.");
+      return;
+    }
+
+    const message = {
+      to: patient.pushToken,
+      sound: 'default',
+      title: 'Medical Report Ready! ✅',
+      body: `Hi ${patient.name.split(' ')[0]}, your specialist review is now available.`,
+      data: { caseId: updatedCase._id, screen: 'case-summary' },
+      priority: 'high'
+    };
+
+    let chunks = expo.chunkPushNotifications([message]);
+    for (let chunk of chunks) {
+      await expo.sendPushNotificationsAsync(chunk);
+    }
+    console.log(`✅ Notification sent to patient: ${patient.name}`);
+  } catch (error) {
+    console.error("❌ Patient Notification Error:", error);
   }
 };

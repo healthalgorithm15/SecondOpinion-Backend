@@ -5,7 +5,7 @@ const router = express.Router();
 const { register, verifyEmail, completeOnboarding } = require('../controllers/registerController');
 const { login, verifyOTP, googleLogin } = require('../controllers/loginController');
 const { forgotPassword, resetPassword, updatePassword } = require('../controllers/passwordController');
-const { getMe, logout } = require('../controllers/sessionController');
+const { getMe, updateProfile, logout } = require('../controllers/sessionController');
 const { getDashboard } = require('../controllers/patientController');
 
 const { apiLimiter, authLimiter } = require('../middleware/rateLimiter'); 
@@ -37,6 +37,7 @@ router.post('/reset-password', authLimiter, resetPassword);
 
 // Session & Profile (This is what the Super Admin uses to check their session)
 router.get('/me', protect, getMe);
+router.patch('/profile', protect, updateProfile);
 router.post('/logout', protect, logout);
 
 // Security: Change password from settings

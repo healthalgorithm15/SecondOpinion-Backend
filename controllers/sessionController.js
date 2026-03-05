@@ -20,3 +20,25 @@ exports.getMe = async (req, res) => {
         res.status(200).json({ success: true, data: user });
     } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
+
+// Example sessionController.js logic
+exports.updateProfile = async (req, res) => {
+  try {
+    const updates = {};
+    if (req.body.pushToken) updates.pushToken = req.body.pushToken;
+    if (req.body.name) updates.name = req.body.name;
+
+    const user = await User.findByIdAndUpdate(
+      req.user.id, 
+      { $set: updates }, 
+      { new: true }
+    );
+
+    res.status(200).json({
+      success: true,
+      data: user
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
