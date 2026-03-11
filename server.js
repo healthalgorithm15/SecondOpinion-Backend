@@ -17,6 +17,7 @@ connectDB();
 
 const app = express();
 const server = http.createServer(app);
+app.set('trust proxy', 1);
 
 // Initialize Socket.io with enhanced settings for Cloud Environments
 const io = new Server(server, {
