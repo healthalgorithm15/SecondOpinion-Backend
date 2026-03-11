@@ -1,15 +1,18 @@
-const { GoogleGenAI } = require("@google/genai"); // 2026 SDK
+const { GoogleGenAI } = require("@google/genai"); 
 const ReviewCase = require('../models/ReviewCase');
 const caseController = require('../controllers/caseController'); 
 
-// Initialize with the 2026 SDK Syntax
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+// Initialize the Gemini API
+const ai = new GoogleGenAI(process.env.GEMINI_API_KEY);
 
 const AI_CONFIG = {
-  primaryModel: "gemini-2.5-flash",
-  fallbackModel: "gemini-1.5-flash-latest", // "latest" ensures you don't hit 404s on deprecation
+  primaryModel: "gemini-2.0-flash", // Recommended for speed and extraction
+  fallbackModel: "gemini-1.5-flash",
 };
 
+/**
+ * 🛠️ Helper: Extracts JSON from Gemini's markdown-style response
+ */
 const parseAIResponse = (text) => {
   try {
     const start = text.indexOf('{');
@@ -22,15 +25,19 @@ const parseAIResponse = (text) => {
     return {
       summary: "AI analysis completed. Please review documents for details.",
       riskLevel: "Medium",
-      markers: ["Extraction failed: format error"]
+      markers: ["Data extraction incomplete"]
     };
   }
 };
 
+/**
+ * 🤖 Main Service: Analyzes medical reports using Multimodal Gemini
+ */
 exports.analyzeReports = async (caseId) => {
   console.log(`🤖 AI Service: Starting analysis for Case ${caseId}`);
 
   try {
+    // 1. Fetch case and populate the actual record data
     const currentCase = await ReviewCase.findById(caseId).populate('recordIds');
 
     if (!currentCase || !currentCase.recordIds.length) {
@@ -38,7 +45,7 @@ exports.analyzeReports = async (caseId) => {
       return;
     }
 
-    // 1. Prepare Multimodal content (Images/PDFs + Prompt)
+    // 2. Prepare file parts for Gemini (Base64 conversion)
     const fileParts = currentCase.recordIds.map(record => ({
       inlineData: {
         data: record.fileData.toString("base64"),
@@ -46,36 +53,32 @@ exports.analyzeReports = async (caseId) => {
       }
     }));
 
-    const textPart = {
-      text: `SYSTEM: Medical Data Assistant. 
-             TASK: Extract summary, risk level, and markers.
-             RETURN ONLY RAW JSON.
-             { "summary": "string", "riskLevel": "Low/Medium/High", "markers": ["string"] }`
+    const prompt = {
+      text: `SYSTEM: You are a professional Medical Data Assistant. 
+             TASK: Analyze the attached medical documents. Extract a high-level summary, determine the risk level, and list key medical markers found.
+             CONSTRAINT: Return ONLY a raw JSON object. Do not include markdown code blocks or conversational text.
+             FORMAT: { "summary": "string", "riskLevel": "Low/Medium/High", "markers": ["string"] }`
     };
 
-    // 2. Execute with Fallback Reliability Logic
     let result;
     let structuredData;
 
     try {
-      console.log(`🧬 Attempting Primary Model: ${AI_CONFIG.primaryModel}`);
-      result = await ai.models.generateContent({
-        model: AI_CONFIG.primaryModel,
-        contents: [...fileParts, textPart]
-      });
-      structuredData = parseAIResponse(result.text);
+      // 🟢 PRIMARY MODEL ATTEMPT
+      console.log(`📡 Sending to Primary Model: ${AI_CONFIG.primaryModel}`);
+      const model = ai.getGenerativeModel({ model: AI_CONFIG.primaryModel });
+      result = await model.generateContent([...fileParts, prompt]);
+      structuredData = parseAIResponse(result.response.text());
     } catch (primaryError) {
       console.warn(`⚠️ Primary AI Failure: ${primaryError.message}. Switching to Fallback...`);
       
-      // FALLBACK EXECUTION
-      result = await ai.models.generateContent({
-        model: AI_CONFIG.fallbackModel,
-        contents: [...fileParts, textPart]
-      });
-      structuredData = parseAIResponse(result.text);
+      // 🟡 FALLBACK MODEL ATTEMPT
+      const fallbackModel = ai.getGenerativeModel({ model: AI_CONFIG.fallbackModel });
+      result = await fallbackModel.generateContent([...fileParts, prompt]);
+      structuredData = parseAIResponse(result.response.text());
     }
 
-    // 3. Database Update (Atomic)
+    // 3. Update ReviewCase in Database
     await ReviewCase.findByIdAndUpdate(caseId, {
       aiAnalysis: {
         summary: structuredData.summary,
@@ -87,19 +90,20 @@ exports.analyzeReports = async (caseId) => {
       priority: structuredData.riskLevel === 'High' ? 'High' : 'Normal'
     });
 
-    console.log(`✅ AI Service: Case ${caseId} updated. Triggering Notification...`);
+    console.log(`✅ AI Service: Case ${caseId} analyzed successfully.`);
 
-    // 4. Trigger Notification (Only after DB is updated)
+    // 4. Trigger Real-time Notifications (Socket/Push)
     await caseController.notifyDoctorCaseReady(caseId);
 
   } catch (error) {
     console.error("❌ AI Service CRITICAL FAILURE:", error.message);
     
-    // Ensure the case is never stuck in "Processing"
+    // Graceful Failure: Move case to doctor even if AI fails
     await ReviewCase.findByIdAndUpdate(caseId, { 
         status: 'PENDING_DOCTOR',
-        'aiAnalysis.summary': 'AI Analysis failed. Please review records manually.' 
+        'aiAnalysis.summary': 'AI Analysis was unable to process these files. Please review manually.' 
     });
+    
     await caseController.notifyDoctorCaseReady(caseId);
   }
 };

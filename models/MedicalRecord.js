@@ -13,6 +13,7 @@
     // For Local Development (Storing bits in DB)
     fileData: { type: Buffer },
     contentType: { type: String }, // e.g., 'application/pdf'
+    isSubmitted: { type: Boolean, default: false, index: true },  
   }, { timestamps: true });
 
   module.exports = mongoose.model('MedicalRecord', MedicalRecordSchema);
