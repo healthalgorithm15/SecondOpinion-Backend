@@ -63,6 +63,52 @@ exports.getDashboard = async (req, res) => {
 };
 
 /**
+ * @desc    🟢 NEW: Reuse Record from Medical Vault
+ * @route   POST /api/patient/records/reuse
+ * Resolves the "handler must be a function" crash by providing the missing implementation.
+ */
+exports.reuseRecord = async (req, res) => {
+  try {
+    const { reportId } = req.body;
+    
+    // 1. Find the original record in history
+    const original = await MedicalRecord.findOne({ 
+      _id: reportId, 
+      userId: req.user._id 
+    });
+    
+    if (!original) {
+      return res.status(404).json({ success: false, message: "Original record not found in vault." });
+    }
+
+    // 2. Create a NEW duplicate record as a draft (isSubmitted: false)
+    // This allows the user to re-submit old documents for a new AI/Doctor review
+    const newDraft = new MedicalRecord({
+      userId: req.user._id,
+      title: `${original.title} (Reused)`,
+      category: original.category,
+      reportDate: original.reportDate,
+      fileType: original.fileType,
+      contentType: original.contentType,
+      fileData: original.fileData, // Maintain original binary data
+      fileName: original.fileName,
+      isSubmitted: false 
+    });
+
+    await newDraft.save();
+
+    res.status(200).json({ 
+      success: true, 
+      message: "Record successfully imported from vault to drafts.",
+      data: { id: newDraft._id, title: newDraft.title }
+    });
+  } catch (error) {
+    console.error("Reuse Record Error:", error);
+    res.status(500).json({ success: false, message: "Failed to import record from vault." });
+  }
+};
+
+/**
  * @desc    Submit reports for Specialist Review (Atomic Transaction)
  * @route   POST /api/patient/submit-review
  */
@@ -109,7 +155,6 @@ exports.submitReview = async (req, res) => {
     }
 
     // 5. Trigger Resilient AI Analysis pipeline (Non-blocking)
-    // The aiService now handles its own retries and fallbacks
     aiService.analyzeReports(newCaseId).catch(err => {
       console.error("Background AI Analysis Error:", err);
     });
@@ -125,6 +170,7 @@ exports.submitReview = async (req, res) => {
 
 /**
  * @desc    Upload Medical Record (Initial Draft)
+ * @route   POST /api/patient/upload
  */
 exports.uploadRecord = async (req, res) => {
   try {
@@ -158,6 +204,7 @@ exports.uploadRecord = async (req, res) => {
 
 /**
  * @desc    Track status of a specific case (Polling/Details)
+ * @route   GET /api/patient/case/:caseId
  */
 exports.getCaseStatus = async (req, res) => {
   try {
@@ -185,6 +232,7 @@ exports.getCaseStatus = async (req, res) => {
 
 /**
  * @desc    Fetch Case History (Populates Medical Vault)
+ * @route   GET /api/patient/history
  */
 exports.getReviewHistory = async (req, res) => {
   try {
@@ -228,6 +276,7 @@ exports.viewLocalFile = async (req, res) => {
 
 /**
  * @desc    Delete a record (Drafts only - prevents deleting records in active review)
+ * @route   DELETE /api/patient/record/:id
  */
 exports.deleteRecord = async (req, res) => {
   try {
