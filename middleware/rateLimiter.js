@@ -1,35 +1,38 @@
 const rateLimit = require('express-rate-limit');
 
 /**
- * Custom key generator to strip port numbers from IP addresses.
- * Resolves: ERR_ERL_INVALID_IP_ADDRESS (e.g., 106.192.14.190:46688)
+ * 🛠️ Helper: Extracts a clean IP from Azure/Proxy headers
+ * This addresses the "ERR_ERL_INVALID_IP_ADDRESS" and "ERR_ERL_KEY_GEN_IPV6"
  */
-const cleanKeyGenerator = (req) => {
-  // Checks X-Forwarded-For (Azure) or fallback to standard req.ip
-  const ip = req.headers['x-forwarded-for'] || req.ip || req.socket.remoteAddress;
-  
-  // If IP is an array, take the first one; then split by colon to remove port
-  const singleIp = Array.isArray(ip) ? ip[0] : ip;
-  return singleIp.split(':')[0].trim();
+const getCleanIp = (req) => {
+    // 1. Check Azure/Proxy forwarded header first
+    const forwarded = req.headers['x-forwarded-for'];
+    const rawIp = forwarded ? forwarded.split(',')[0] : req.ip || req.connection.remoteAddress;
+    
+    // 2. Remove port numbers if they exist (common in Azure/local testing)
+    // Works for both IPv4 (127.0.0.1:5000) and IPv6 ([::1]:5000)
+    return rawIp.replace(/(.*):(\d+)$/, '$1').replace(/[\[\]]/g, '');
 };
 
-// Strict: For Login, Register, Forgot Password
-exports.authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, 
-  max: 20, 
-  message: { message: "Too many login attempts. Please try again later." },
-  keyGenerator: cleanKeyGenerator, // ✅ Added fix
-  standardHeaders: true,
-  legacyHeaders: false,
+// 🛡️ General API Limiter
+const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => getCleanIp(req), // Use our cleaner
+    validate: { xForwardedForHeader: false }, // Disable internal check to use our custom logic
 });
 
-// Relaxed: For Dashboard, Profile, etc.
-exports.apiLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000, 
-  max: 100, 
-  message: { message: "Too many requests. Please slow down." },
-  keyGenerator: cleanKeyGenerator, // ✅ Added fix
-  skip: (req) => process.env.NODE_ENV === 'development',
-  standardHeaders: true,
-  legacyHeaders: false,
+// 🔐 Auth Limiter (Login/OTP)
+const authLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000, // 1 hour
+    max: 10,
+    message: { message: "Too many attempts. Please try again after an hour." },
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => getCleanIp(req),
+    validate: { xForwardedForHeader: false },
 });
+
+module.exports = { apiLimiter, authLimiter };

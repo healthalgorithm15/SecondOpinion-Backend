@@ -2,42 +2,23 @@ const { GoogleGenAI } = require("@google/genai");
 const ReviewCase = require('../models/ReviewCase');
 const caseController = require('../controllers/caseController'); 
 
-// Initialize the Gemini API
-const ai = new GoogleGenAI(process.env.GEMINI_API_KEY);
-
-const AI_CONFIG = {
-  primaryModel: "gemini-2.0-flash", // Recommended for speed and extraction
-  fallbackModel: "gemini-1.5-flash",
-};
+// 1. Initialize using the same pattern as your successful test
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 /**
- * 🛠️ Helper: Extracts JSON from Gemini's markdown-style response
+ * 🛠️ Helper: Matches your test script's cleaning logic
  */
-const parseAIResponse = (text) => {
-  try {
-    const start = text.indexOf('{');
-    const end = text.lastIndexOf('}') + 1;
-    if (start === -1 || end === 0) throw new Error("No JSON found");
-    const cleaned = text.substring(start, end);
-    return JSON.parse(cleaned);
-  } catch (err) {
-    console.error("⚠️ AI Parsing Error. Raw Text:", text);
-    return {
-      summary: "AI analysis completed. Please review documents for details.",
-      riskLevel: "Medium",
-      markers: ["Data extraction incomplete"]
-    };
-  }
+const cleanJSON = (text) => {
+  return text.replace(/```json|```/g, "").trim();
 };
 
 /**
- * 🤖 Main Service: Analyzes medical reports using Multimodal Gemini
+ * 🤖 Main Service: Analyzes medical reports using the working Test Logic
  */
 exports.analyzeReports = async (caseId) => {
   console.log(`🤖 AI Service: Starting analysis for Case ${caseId}`);
 
   try {
-    // 1. Fetch case and populate the actual record data
     const currentCase = await ReviewCase.findById(caseId).populate('recordIds');
 
     if (!currentCase || !currentCase.recordIds.length) {
@@ -45,40 +26,51 @@ exports.analyzeReports = async (caseId) => {
       return;
     }
 
-    // 2. Prepare file parts for Gemini (Base64 conversion)
+    // 2. Prepare file parts (Matching your test's inlineData structure)
     const fileParts = currentCase.recordIds.map(record => ({
       inlineData: {
         data: record.fileData.toString("base64"),
-        mimeType: record.contentType
+        mimeType: record.contentType // e.g., "image/jpeg"
       }
     }));
 
-    const prompt = {
-      text: `SYSTEM: You are a professional Medical Data Assistant. 
-             TASK: Analyze the attached medical documents. Extract a high-level summary, determine the risk level, and list key medical markers found.
-             CONSTRAINT: Return ONLY a raw JSON object. Do not include markdown code blocks or conversational text.
-             FORMAT: { "summary": "string", "riskLevel": "Low/Medium/High", "markers": ["string"] }`
-    };
+    // 3. Use the exact prompt and model from your successful test
+    const result = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [
+        ...fileParts,
+        {
+          text: `
+            SYSTEM: You are a Clinical Assistant. 
+            TASK: Extract data from this medical report.
+            
+            STRICT RULES:
+            - Provide a 2-sentence summary.
+            - Determine RiskLevel: Low, Medium, or High.
+            - List key markers found (e.g., Hemoglobin, Glucose).
+            - Return ONLY raw JSON. No markdown, no backticks.
 
-    let result;
-    let structuredData;
+            JSON STRUCTURE:
+            {
+              "summary": "string",
+              "riskLevel": "string",
+              "markers": ["string"]
+            }
+          `
+        }
+      ]
+    });
 
-    try {
-      // 🟢 PRIMARY MODEL ATTEMPT
-      console.log(`📡 Sending to Primary Model: ${AI_CONFIG.primaryModel}`);
-      const model = ai.getGenerativeModel({ model: AI_CONFIG.primaryModel });
-      result = await model.generateContent([...fileParts, prompt]);
-      structuredData = parseAIResponse(result.response.text());
-    } catch (primaryError) {
-      console.warn(`⚠️ Primary AI Failure: ${primaryError.message}. Switching to Fallback...`);
-      
-      // 🟡 FALLBACK MODEL ATTEMPT
-      const fallbackModel = ai.getGenerativeModel({ model: AI_CONFIG.fallbackModel });
-      result = await fallbackModel.generateContent([...fileParts, prompt]);
-      structuredData = parseAIResponse(result.response.text());
+    // 4. Extract and Parse (Matching your test logic)
+    const responseText = result.text || result.response?.text || (typeof result === 'string' ? result : "");
+    
+    if (!responseText) {
+       throw new Error("AI returned an empty response.");
     }
 
-    // 3. Update ReviewCase in Database
+    const structuredData = JSON.parse(cleanJSON(responseText));
+
+    // 5. Update ReviewCase in Database
     await ReviewCase.findByIdAndUpdate(caseId, {
       aiAnalysis: {
         summary: structuredData.summary,
@@ -91,14 +83,12 @@ exports.analyzeReports = async (caseId) => {
     });
 
     console.log(`✅ AI Service: Case ${caseId} analyzed successfully.`);
-
-    // 4. Trigger Real-time Notifications (Socket/Push)
     await caseController.notifyDoctorCaseReady(caseId);
 
   } catch (error) {
     console.error("❌ AI Service CRITICAL FAILURE:", error.message);
     
-    // Graceful Failure: Move case to doctor even if AI fails
+    // Graceful Failure
     await ReviewCase.findByIdAndUpdate(caseId, { 
         status: 'PENDING_DOCTOR',
         'aiAnalysis.summary': 'AI Analysis was unable to process these files. Please review manually.' 
