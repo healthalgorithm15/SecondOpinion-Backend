@@ -5,14 +5,15 @@ const config = require('../config');
 const mongoose = require('mongoose');
 
 /**
- * @desc    Get Patient Dashboard (Dynamic Scenario Handling)
+ * @desc    Get Patient Dashboard (Includes Active Case Tracker logic)
  * @route   GET /api/patient/dashboard
+ * @access  Private (Patient)
  */
 exports.getDashboard = async (req, res) => {
   try {
     const userId = req.user._id;
 
-    // 1. SCENARIO 2: Fetch Drafts (Uploaded but not yet submitted for review)
+    // 1. Fetch Drafts (Uploaded but not yet submitted for review)
     const draftReports = await MedicalRecord.find({ 
       userId, 
       isSubmitted: false 
@@ -21,15 +22,19 @@ exports.getDashboard = async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    // 2. SCENARIO 3: Fetch Active Case (The "Under Review" state)
-    // Fetches the most recent case that is still in progress
+    /**
+     * 2. Fetch Active Case (The "Tracker" state)
+     * CRITICAL: We include 'COMPLETED' here so the tracker strip stays visible
+     * on the landing page even after the doctor submits the final verdict.
+     * This allows the patient to click the "Green" tracker to view results.
+     */
     const activeCase = await ReviewCase.findOne({ 
       patientId: userId, 
-      status: { $in: ['AI_PROCESSING', 'PENDING_DOCTOR'] } 
+      status: { $in: ['AI_PROCESSING', 'PENDING_DOCTOR', 'COMPLETED'] } 
     })
       .populate('recordIds', 'title category')
       .populate('doctorId', 'name specialization')
-      .sort({ createdAt: -1 })
+      .sort({ createdAt: -1 }) // Get the most recent one
       .lean();
 
     // Format draft reports with viewing URLs for the frontend
@@ -103,7 +108,8 @@ exports.submitReview = async (req, res) => {
       });
     }
 
-    // 5. Trigger AI Analysis pipeline (Non-blocking)
+    // 5. Trigger Resilient AI Analysis pipeline (Non-blocking)
+    // The aiService now handles its own retries and fallbacks
     aiService.analyzeReports(newCaseId).catch(err => {
       console.error("Background AI Analysis Error:", err);
     });
@@ -119,7 +125,6 @@ exports.submitReview = async (req, res) => {
 
 /**
  * @desc    Upload Medical Record (Initial Draft)
- * @route   POST /api/patient/upload
  */
 exports.uploadRecord = async (req, res) => {
   try {
@@ -153,7 +158,6 @@ exports.uploadRecord = async (req, res) => {
 
 /**
  * @desc    Track status of a specific case (Polling/Details)
- * @route   GET /api/patient/case/:caseId
  */
 exports.getCaseStatus = async (req, res) => {
   try {
@@ -166,10 +170,10 @@ exports.getCaseStatus = async (req, res) => {
       return res.status(403).json({ success: false, message: "Access denied." });
     }
 
-    // Map status to frontend Stepper steps
+    // Map status to frontend Stepper steps for the Tracker UI
     const uiSteps = { 
       docsUploaded: true, 
-      aiCompleted: !['AI_PROCESSING'].includes(patientCase.status), 
+      aiCompleted: !['AI_PROCESSING', 'UPLOADED'].includes(patientCase.status), 
       doctorStarted: !!patientCase.doctorId || patientCase.status === 'COMPLETED' 
     };
 
@@ -181,7 +185,6 @@ exports.getCaseStatus = async (req, res) => {
 
 /**
  * @desc    Fetch Case History (Populates Medical Vault)
- * @route   GET /api/patient/history
  */
 exports.getReviewHistory = async (req, res) => {
   try {
@@ -198,35 +201,6 @@ exports.getReviewHistory = async (req, res) => {
 };
 
 /**
- * @desc    Reuse a record from History (Creates a new draft pointer)
- * @route   POST /api/patient/records/reuse
- */
-exports.reuseRecord = async (req, res) => {
-  try {
-    const { reportId } = req.body;
-    const original = await MedicalRecord.findById(reportId);
-    
-    if (!original) return res.status(404).json({ success: false, message: "Record not found." });
-
-    const reusedRecord = new MedicalRecord({
-      userId: req.user._id,
-      title: `${original.title} (Ref)`,
-      category: original.category,
-      fileType: original.fileType,
-      fileData: original.fileData,
-      contentType: original.contentType,
-      fileName: original.fileName,
-      isSubmitted: false 
-    });
-
-    await reusedRecord.save();
-    res.status(200).json({ success: true, message: "Added to drafts." });
-  } catch (error) {
-    res.status(500).json({ success: false, message: "Failed to reuse record." });
-  }
-};
-
-/**
  * @desc    View Medical Document (Buffer stream)
  * @route   GET /api/patient/view/:id
  */
@@ -235,7 +209,7 @@ exports.viewLocalFile = async (req, res) => {
     const record = await MedicalRecord.findById(req.params.id);
     if (!record) return res.status(404).json({ success: false, message: "Record not found." });
 
-    // Permissions: Owner or Assigned Doctor
+    // Permissions check
     if (record.userId.toString() !== req.user._id.toString() && req.user.role !== 'doctor') {
       return res.status(403).json({ success: false, message: "Access denied." });
     }
@@ -253,8 +227,7 @@ exports.viewLocalFile = async (req, res) => {
 };
 
 /**
- * @desc    Delete a record (Drafts only)
- * @route   DELETE /api/patient/record/:id
+ * @desc    Delete a record (Drafts only - prevents deleting records in active review)
  */
 exports.deleteRecord = async (req, res) => {
   try {
