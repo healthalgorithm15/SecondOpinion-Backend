@@ -89,11 +89,11 @@ exports.notifyDoctorCaseReady = async (caseId) => {
 exports.notifyPatientReportReady = async (caseId) => {
   try {
     const updatedCase = await ReviewCase.findById(caseId).populate('patientId');
-    if (!updatedCase) return;
+    if (!updatedCase || !updatedCase.patientId) return;
 
     const patient = updatedCase.patientId;
 
-    // 1. Socket Emit: Status COMPLETED
+    // 1. Real-time Status Update
     if (global.io) {
       global.io.emit('caseStatusUpdate', {
         caseId: updatedCase._id,
@@ -102,19 +102,23 @@ exports.notifyPatientReportReady = async (caseId) => {
       });
     }
 
-    // 2. Push Notification
-    if (patient?.pushToken && Expo.isExpoPushToken(patient.pushToken)) {
-      const message = {
+    // 2. Push Notification logic
+    if (patient.pushToken && Expo.isExpoPushToken(patient.pushToken)) {
+      const messages = [{
         to: patient.pushToken,
         sound: 'default',
         title: 'Medical Report Ready! ✅',
-        body: `Hi ${patient.name.split(' ')[0]}, your specialist review is now available.`,
+        body: `Hi ${patient.name.split(' ')[0] || 'there'}, your specialist review is now available.`,
         data: { caseId: updatedCase._id, screen: 'case-summary' },
         priority: 'high'
-      };
+      }];
 
-      await expo.sendPushNotificationsAsync([message]);
-      console.log(`✅ Success: Notification sent to patient ${patient.name}`);
+      // Even for one message, chunking/sending through the standard flow is safer
+      const chunks = expo.chunkPushNotifications(messages);
+      for (let chunk of chunks) {
+        await expo.sendPushNotificationsAsync(chunk);
+      }
+      console.log(`✅ Success: Notification sent to patient ${patient._id}`);
     }
   } catch (error) {
     console.error("❌ Patient Notification Error:", error);

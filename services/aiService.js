@@ -16,84 +16,59 @@ const cleanJSON = (text) => {
  * 🤖 Main Service: Analyzes medical reports using the working Test Logic
  */
 exports.analyzeReports = async (caseId) => {
-  console.log(`🤖 AI Service: Starting analysis for Case ${caseId}`);
-
   try {
     const currentCase = await ReviewCase.findById(caseId).populate('recordIds');
+    if (!currentCase || !currentCase.recordIds.length) return;
 
-    if (!currentCase || !currentCase.recordIds.length) {
-      console.error("❌ No records found for this case.");
-      return;
-    }
-
-    // 2. Prepare file parts (Matching your test's inlineData structure)
+    // Map records to the expected format
     const fileParts = currentCase.recordIds.map(record => ({
       inlineData: {
         data: record.fileData.toString("base64"),
-        mimeType: record.contentType // e.g., "image/jpeg"
+        mimeType: record.contentType 
       }
     }));
 
-    // 3. Use the exact prompt and model from your successful test
-    const result = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: [
-        ...fileParts,
-        {
-          text: `
-            SYSTEM: You are a Clinical Assistant. 
-            TASK: Extract data from this medical report.
-            
-            STRICT RULES:
-            - Provide a 2-sentence summary.
-            - Determine RiskLevel: Low, Medium, or High.
-            - List key markers found (e.g., Hemoglobin, Glucose).
-            - Return ONLY raw JSON. No markdown, no backticks.
+    const model = ai.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-            JSON STRUCTURE:
-            {
-              "summary": "string",
-              "riskLevel": "string",
-              "markers": ["string"]
-            }
-          `
-        }
-      ]
-    });
+    const prompt = `
+      SYSTEM: Clinical Assistant. TASK: Extract data.
+      RULES: 2-sentence summary. RiskLevel: Low, Medium, High. List markers. 
+      Return ONLY raw JSON.
+      JSON: {"summary": "string", "riskLevel": "Low|Medium|High", "markers": []}
+    `;
 
-    // 4. Extract and Parse (Matching your test logic)
-    const responseText = result.text || result.response?.text || (typeof result === 'string' ? result : "");
-    
-    if (!responseText) {
-       throw new Error("AI returned an empty response.");
-    }
+    // Correct SDK call pattern
+    const result = await model.generateContent([prompt, ...fileParts]);
+    const response = await result.response;
+    const responseText = response.text();
 
     const structuredData = JSON.parse(cleanJSON(responseText));
 
-    // 5. Update ReviewCase in Database
+    // Normalize risk for priority logic
+    const normalizedRisk = (structuredData.riskLevel || 'Low').trim();
+    const isHighPriority = normalizedRisk.toLowerCase() === 'high';
+
     await ReviewCase.findByIdAndUpdate(caseId, {
       aiAnalysis: {
         summary: structuredData.summary,
-        riskLevel: structuredData.riskLevel,
-        extractedMarkers: structuredData.markers,
+        riskLevel: normalizedRisk,
+        extractedMarkers: structuredData.markers || [],
         analyzedAt: new Date()
       },
       status: 'PENDING_DOCTOR', 
-      priority: structuredData.riskLevel === 'High' ? 'High' : 'Normal'
+      priority: isHighPriority ? 'High' : 'Normal'
     });
 
-    console.log(`✅ AI Service: Case ${caseId} analyzed successfully.`);
+    console.log(`✅ AI Analysis Complete for ${caseId}`);
     await caseController.notifyDoctorCaseReady(caseId);
 
   } catch (error) {
-    console.error("❌ AI Service CRITICAL FAILURE:", error.message);
-    
-    // Graceful Failure
+    console.error("❌ AI Failure:", error.message);
+    // Fallback to manual doctor review
     await ReviewCase.findByIdAndUpdate(caseId, { 
         status: 'PENDING_DOCTOR',
-        'aiAnalysis.summary': 'AI Analysis was unable to process these files. Please review manually.' 
+        'aiAnalysis.summary': 'AI was unable to process files. Manual review required.' 
     });
-    
     await caseController.notifyDoctorCaseReady(caseId);
   }
 };
