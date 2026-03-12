@@ -1,74 +1,115 @@
-const { GoogleGenAI } = require("@google/genai"); 
+const { GoogleGenAI } = require("@google/genai");
 const ReviewCase = require('../models/ReviewCase');
-const caseController = require('../controllers/caseController'); 
+const caseController = require('../controllers/caseController');
 
-// 1. Initialize using the same pattern as your successful test
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+// 1. Correct SDK Initialization
+const genAI = new GoogleGenAI(process.env.GEMINI_API_KEY);
 
 /**
- * 🛠️ Helper: Matches your test script's cleaning logic
+ * 🛠️ Robust JSON Parser
+ * Uses Regex to find the JSON object even if the AI adds text around it.
  */
-const cleanJSON = (text) => {
-  return text.replace(/```json|```/g, "").trim();
+const parseAIResponse = (text) => {
+    try {
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        return jsonMatch ? JSON.parse(jsonMatch[0]) : null;
+    } catch (e) {
+        console.error("Parsing Error:", e);
+        return null;
+    }
 };
 
 /**
- * 🤖 Main Service: Analyzes medical reports using the working Test Logic
+ * 🤖 Main Service: Analyzes medical reports with Auto-Retry logic
+ * @param {string} caseId - The ID of the case to analyze
+ * @param {number} attempt - Current attempt count for model fallbacks
  */
-exports.analyzeReports = async (caseId) => {
-  try {
-    const currentCase = await ReviewCase.findById(caseId).populate('recordIds');
-    if (!currentCase || !currentCase.recordIds.length) return;
+exports.analyzeReports = async (caseId, attempt = 0) => {
+    // List of models to try in order of preference
+    const MODELS = ["gemini-1.5-flash", "gemini-1.5-pro"];
+    const currentModelName = MODELS[attempt] || MODELS[0];
 
-    // Map records to the expected format
-    const fileParts = currentCase.recordIds.map(record => ({
-      inlineData: {
-        data: record.fileData.toString("base64"),
-        mimeType: record.contentType 
-      }
-    }));
+    console.log(`🤖 AI Attempt ${attempt + 1}: Using ${currentModelName} for Case ${caseId}`);
 
-    const model = ai.getGenerativeModel({ model: "gemini-1.5-flash" });
+    try {
+        const currentCase = await ReviewCase.findById(caseId).populate('recordIds');
+        if (!currentCase || !currentCase.recordIds.length) {
+            console.error("❌ Case or records missing.");
+            return;
+        }
 
-    const prompt = `
-      SYSTEM: Clinical Assistant. TASK: Extract data.
-      RULES: 2-sentence summary. RiskLevel: Low, Medium, High. List markers. 
-      Return ONLY raw JSON.
-      JSON: {"summary": "string", "riskLevel": "Low|Medium|High", "markers": []}
-    `;
+        // 2. Initialize the specific model
+        const model = genAI.getGenerativeModel({ model: currentModelName });
 
-    // Correct SDK call pattern
-    const result = await model.generateContent([prompt, ...fileParts]);
-    const response = await result.response;
-    const responseText = response.text();
+        // Prepare multimodal data (Base64)
+        const fileParts = currentCase.recordIds.map(record => ({
+            inlineData: {
+                data: record.fileData.toString("base64"),
+                mimeType: record.contentType
+            }
+        }));
 
-    const structuredData = JSON.parse(cleanJSON(responseText));
+        const prompt = `
+            SYSTEM: Clinical Assistant. TASK: Extract data.
+            RULES: 2-sentence summary. RiskLevel: Low, Medium, High. List key medical markers. 
+            Return ONLY raw JSON.
+            JSON: {"summary": "string", "riskLevel": "Low|Medium|High", "markers": []}
+        `;
 
-    // Normalize risk for priority logic
-    const normalizedRisk = (structuredData.riskLevel || 'Low').trim();
-    const isHighPriority = normalizedRisk.toLowerCase() === 'high';
+        // 3. Generate content with a 30-second safety timeout
+        const result = await Promise.race([
+            model.generateContent([prompt, ...fileParts]),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("TIMEOUT")), 30000))
+        ]);
 
-    await ReviewCase.findByIdAndUpdate(caseId, {
-      aiAnalysis: {
-        summary: structuredData.summary,
-        riskLevel: normalizedRisk,
-        extractedMarkers: structuredData.markers || [],
-        analyzedAt: new Date()
-      },
-      status: 'PENDING_DOCTOR', 
-      priority: isHighPriority ? 'High' : 'Normal'
-    });
+        const response = await result.response;
+        const responseText = response.text();
+        const structuredData = parseAIResponse(responseText);
 
-    console.log(`✅ AI Analysis Complete for ${caseId}`);
-    await caseController.notifyDoctorCaseReady(caseId);
+        if (!structuredData) throw new Error("INVALID_JSON_FORMAT");
 
-  } catch (error) {
-    console.error("❌ AI Failure:", error.message);
-    // Fallback to manual doctor review
-    await ReviewCase.findByIdAndUpdate(caseId, { 
-        status: 'PENDING_DOCTOR',
-        'aiAnalysis.summary': 'AI was unable to process files. Manual review required.' 
-    });
-    await caseController.notifyDoctorCaseReady(caseId);
-  }
+        // 4. Update Database with AI Findings
+        const normalizedRisk = (structuredData.riskLevel || 'Low').trim();
+        const isHighPriority = normalizedRisk.toLowerCase() === 'high';
+
+        await ReviewCase.findByIdAndUpdate(caseId, {
+            aiAnalysis: {
+                summary: structuredData.summary,
+                riskLevel: normalizedRisk,
+                extractedMarkers: structuredData.markers || [],
+                analyzedAt: new Date(),
+                modelVersion: currentModelName // Useful for auditing
+            },
+            status: 'PENDING_DOCTOR',
+            priority: isHighPriority ? 'High' : 'Normal'
+        });
+
+        console.log(`✅ AI Analysis Successful: Case ${caseId}`);
+        await caseController.notifyDoctorCaseReady(caseId);
+
+    } catch (error) {
+        console.error(`❌ AI Error on ${currentModelName}:`, error.message);
+
+        // 5. AUTO-FALLBACK LOGIC
+        // If we have more models to try, move to the next one
+        if (attempt < MODELS.length - 1) {
+            console.log(`🔄 Attempting fallback to ${MODELS[attempt + 1]}...`);
+            return exports.analyzeReports(caseId, attempt + 1);
+        }
+
+        // 6. FINAL GRACEFUL DEGRADATION
+        // If all AI attempts fail, move to PENDING_DOCTOR with a manual review flag
+        console.error("🔥 All AI models failed. Proceeding to Manual Review.");
+        
+        await ReviewCase.findByIdAndUpdate(caseId, {
+            status: 'PENDING_DOCTOR',
+            aiAnalysis: {
+                summary: 'AI analysis service was unable to process these files. Manual review required.',
+                riskLevel: 'Medium',
+                analyzedAt: new Date()
+            }
+        });
+
+        await caseController.notifyDoctorCaseReady(caseId);
+    }
 };

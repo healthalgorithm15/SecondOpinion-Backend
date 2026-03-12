@@ -14,7 +14,7 @@ exports.startCaseAnalysis = async (req, res) => {
 
     await ReviewCase.findByIdAndUpdate(caseId, { status: 'AI_PROCESSING' });
 
-    // Background Execution
+    // Background Execution - AI will call notifyDoctorCaseReady when done
     aiService.analyzeReports(caseId).catch(err => {
         console.error(`CRITICAL: Background AI Analysis failed for ${caseId}:`, err);
     });
@@ -30,19 +30,17 @@ exports.startCaseAnalysis = async (req, res) => {
  */
 exports.notifyDoctorCaseReady = async (caseId) => {
   try {
-    const updatedCase = await ReviewCase.findById(caseId).populate('patientId', 'name');
+    const updatedCase = await ReviewCase.findById(caseId).populate('patientId');
     if (!updatedCase) return;
     
-    // 1. Socket Emit (Patient & Doctor sync)
+    // 1. Socket Emit: Syncing the tracker strip in Patient UI
     if (global.io) {
-      // Notify Patient to update their Stepper
       global.io.emit('caseStatusUpdate', { 
         caseId: updatedCase._id, 
-        status: 'PENDING_DOCTOR',
+        status: 'PENDING_DOCTOR', // This moves the stepper to stage 3
         patientId: updatedCase.patientId?._id 
       });
 
-      // Notify Doctor queue
       global.io.to('doctor').emit('case_ready_for_review', {
         caseId: updatedCase._id,
         patientName: updatedCase.patientId?.name,
@@ -50,7 +48,7 @@ exports.notifyDoctorCaseReady = async (caseId) => {
       });
     }
 
-    // 2. Build Expo Push Messages
+    // 2. Doctor Push Notifications
     const doctors = await User.find({ role: 'doctor', pushToken: { $ne: null } });
     let messages = [];
 
@@ -70,11 +68,7 @@ exports.notifyDoctorCaseReady = async (caseId) => {
     if (messages.length > 0) {
       let chunks = expo.chunkPushNotifications(messages);
       for (let chunk of chunks) {
-        try {
-          await expo.sendPushNotificationsAsync(chunk);
-        } catch (error) {
-          console.error("Expo Push Error:", error);
-        }
+        await expo.sendPushNotificationsAsync(chunk);
       }
     }
     console.log(`✅ Doctor notifications dispatched for Case: ${caseId}`);
@@ -88,12 +82,17 @@ exports.notifyDoctorCaseReady = async (caseId) => {
  */
 exports.notifyPatientReportReady = async (caseId) => {
   try {
+    // CRITICAL: We must populate patientId to access the pushToken
     const updatedCase = await ReviewCase.findById(caseId).populate('patientId');
-    if (!updatedCase || !updatedCase.patientId) return;
+    
+    if (!updatedCase || !updatedCase.patientId) {
+      console.error("❌ Notification Failed: Could not find patient details for case", caseId);
+      return;
+    }
 
     const patient = updatedCase.patientId;
 
-    // 1. Real-time Status Update
+    // 1. Socket Emit: Update Tracker Strip to "COMPLETED"
     if (global.io) {
       global.io.emit('caseStatusUpdate', {
         caseId: updatedCase._id,
@@ -104,21 +103,19 @@ exports.notifyPatientReportReady = async (caseId) => {
 
     // 2. Push Notification logic
     if (patient.pushToken && Expo.isExpoPushToken(patient.pushToken)) {
-      const messages = [{
+      const message = {
         to: patient.pushToken,
         sound: 'default',
         title: 'Medical Report Ready! ✅',
-        body: `Hi ${patient.name.split(' ')[0] || 'there'}, your specialist review is now available.`,
+        body: `Hi ${patient.name.split(' ')[0]}, your specialist review is now available.`,
         data: { caseId: updatedCase._id, screen: 'case-summary' },
         priority: 'high'
-      }];
+      };
 
-      // Even for one message, chunking/sending through the standard flow is safer
-      const chunks = expo.chunkPushNotifications(messages);
-      for (let chunk of chunks) {
-        await expo.sendPushNotificationsAsync(chunk);
-      }
-      console.log(`✅ Success: Notification sent to patient ${patient._id}`);
+      await expo.sendPushNotificationsAsync([message]);
+      console.log(`✅ Success: Notification sent to patient ${patient.name}`);
+    } else {
+      console.warn(`⚠️ Patient ${patient.name} has no valid Expo Push Token.`);
     }
   } catch (error) {
     console.error("❌ Patient Notification Error:", error);
