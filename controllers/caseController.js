@@ -37,7 +37,7 @@ exports.notifyDoctorCaseReady = async (caseId) => {
     if (global.io) {
       global.io.emit('caseStatusUpdate', { 
         caseId: updatedCase._id, 
-        status: 'PENDING_DOCTOR', // This moves the stepper to stage 3
+        status: 'PENDING_DOCTOR', 
         patientId: updatedCase.patientId?._id 
       });
 
@@ -60,7 +60,11 @@ exports.notifyDoctorCaseReady = async (caseId) => {
         sound: 'default',
         title: 'Action Required: New Case 🩺',
         body: `[${updatedCase.aiAnalysis?.riskLevel || 'Normal'} Priority] AI analysis complete for ${updatedCase.patientId?.name}.`,
-        data: { caseId: updatedCase._id, role: 'doctor' },
+        data: { 
+          caseId: updatedCase._id, 
+          role: 'doctor',
+          type: 'NEW_CASE'
+        },
         priority: 'high'
       });
     }
@@ -68,7 +72,11 @@ exports.notifyDoctorCaseReady = async (caseId) => {
     if (messages.length > 0) {
       let chunks = expo.chunkPushNotifications(messages);
       for (let chunk of chunks) {
-        await expo.sendPushNotificationsAsync(chunk);
+        try {
+          await expo.sendPushNotificationsAsync(chunk);
+        } catch (error) {
+          console.error("Error sending chunk to doctors:", error);
+        }
       }
     }
     console.log(`✅ Doctor notifications dispatched for Case: ${caseId}`);
@@ -82,7 +90,7 @@ exports.notifyDoctorCaseReady = async (caseId) => {
  */
 exports.notifyPatientReportReady = async (caseId) => {
   try {
-    // CRITICAL: We must populate patientId to access the pushToken
+    // Populate patientId to access the pushToken
     const updatedCase = await ReviewCase.findById(caseId).populate('patientId');
     
     if (!updatedCase || !updatedCase.patientId) {
@@ -108,12 +116,21 @@ exports.notifyPatientReportReady = async (caseId) => {
         sound: 'default',
         title: 'Medical Report Ready! ✅',
         body: `Hi ${patient.name.split(' ')[0]}, your specialist review is now available.`,
-        data: { caseId: updatedCase._id, screen: 'case-summary' },
+        // Updated data payload to match the router structure in the mobile app
+        data: { 
+          caseId: updatedCase._id, 
+          type: 'REPORT_READY',
+          url: `/(tabs)/patient/case-summary?caseId=${updatedCase._id}` 
+        },
         priority: 'high'
       };
 
-      await expo.sendPushNotificationsAsync([message]);
-      console.log(`✅ Success: Notification sent to patient ${patient.name}`);
+      try {
+        const ticketChunk = await expo.sendPushNotificationsAsync([message]);
+        console.log(`✅ Success: Notification sent to patient ${patient.name}`, ticketChunk);
+      } catch (error) {
+        console.error(`❌ Expo SDK Error for patient ${patient.name}:`, error);
+      }
     } else {
       console.warn(`⚠️ Patient ${patient.name} has no valid Expo Push Token.`);
     }
