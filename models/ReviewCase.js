@@ -5,21 +5,28 @@ const ReviewCaseSchema = new mongoose.Schema({
   doctorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true }, 
   recordIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'MedicalRecord', required: true }],
 
-  // 🟢 FIXED: Added 'AI_PROCESSING' to the enum to match the default and controller
   status: { 
     type: String, 
     enum: ['AI_PROCESSING', 'PENDING_DOCTOR', 'COMPLETED', 'CANCELLED'],
     default: 'AI_PROCESSING' 
   },
 
- aiAnalysis: {
+  aiAnalysis: {
     summary: String,
-    riskLevel: { type: String, enum: ['Low', 'Medium', 'High', 'Unknown'] }, 
-    extractedMarkers: [String], // 🟢 Changed from Object to Array of Strings
-    processedAt: { type: Date, default: Date.now }
+    riskLevel: { 
+      type: String, 
+      enum: ['Low', 'Medium', 'High', 'Unknown'], 
+      default: 'Unknown' 
+    }, 
+    extractedMarkers: [String],
+    // 🟢 FIXED: Match field name used in aiService.js (analyzedAt)
+    analyzedAt: { type: Date, default: Date.now },
+    // 🟢 ADDED: Useful for tracking which model gave which result
+    modelVersion: String,
+    // 🟢 ADDED: To store failure reasons if AI fails
+    errorLog: String 
   },
   
-  // 🟢 Add this for better Doctor Dashboard sorting
   priority: { 
     type: String, 
     enum: ['Normal', 'High'], 
@@ -30,8 +37,7 @@ const ReviewCaseSchema = new mongoose.Schema({
     finalVerdict: String,
     recommendations: String,
     reviewedAt: Date
-  },
-  createdAt: { type: Date, default: Date.now }
-}, { timestamps: true });
+  }
+}, { timestamps: true }); // Automatically handles createdAt and updatedAt
 
 module.exports = mongoose.model('ReviewCase', ReviewCaseSchema);
