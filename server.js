@@ -1,4 +1,7 @@
+// 1. MUST BE FIRST: Load Environment Variables
+require('dotenv').config(); 
 const config = require('./config'); 
+
 const cors = require('cors');
 const express = require('express');
 const http = require('http'); 
@@ -6,40 +9,42 @@ const { Server } = require('socket.io');
 const connectDB = require('./config/db');
 const User = require('./models/User');
 
-// Route Imports
-const adminRoutes = require('./routes/adminRoutes');
-const authRoutes = require('./routes/authRoutes');
-const patientRoutes = require('./routes/patientRoutes');
-const doctorRoutes = require('./routes/doctorRoutes');
-const reportRoutes = require('./routes/reportRoutes');
-const paymentRoutes = require('./routes/paymentRoutes');
-
+// 2. Connect to Database
 connectDB();
 
 const app = express();
 const server = http.createServer(app);
 app.set('trust proxy', 1);
 
-// Initialize Socket.io with enhanced settings for Cloud Environments
+// 3. Initialize Socket.io
 const io = new Server(server, {
   cors: {
     origin: "*", 
     methods: ["GET", "POST"]
   },
-  pingTimeout: 60000, // Handle potential Azure idle timeouts
+  pingTimeout: 60000, 
   pingInterval: 25000,
-  transports: ['websocket', 'polling'] // Allow fallback if websocket fails
+  transports: ['websocket', 'polling'] 
 });
 
 global.io = io;
 
+// 4. Middleware
 app.use(cors());
 app.use(express.json());
+
+// 5. Route Imports (Moved AFTER dotenv/config)
+const authRoutes = require('./routes/authRoutes');
+const adminRoutes = require('./routes/adminRoutes');
+const patientRoutes = require('./routes/patientRoutes');
+const doctorRoutes = require('./routes/doctorRoutes');
+const reportRoutes = require('./routes/reportRoutes');
+const paymentRoutes = require('./routes/paymentRoutes');
 
 app.get('/', (req, res) => {
   res.json({ 
     success: true, 
-    message: "Backend is officially LIVE",
+    message: "Praman AI Backend is LIVE",
     env: config.env 
   });
 });
@@ -54,15 +59,9 @@ app.use('/api/payments', paymentRoutes);
 // Socket Logic
 io.on('connection', (socket) => {
   console.log(`⚡ Connection Established: ${socket.id}`); 
-
   socket.on('joinRoom', async (data) => {
     const { userId, role } = data;
-    
-    if (role) {
-      socket.join(role);
-      console.log(`👤 User ${userId} (Role: ${role}) joined their room.`);
-    }
-
+    if (role) socket.join(role);
     if (userId) {
       try {
         await User.findByIdAndUpdate(userId, { socketId: socket.id });
@@ -72,13 +71,12 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('disconnect', async (reason) => {
-    console.log(`🔌 Disconnected: ${socket.id} (Reason: ${reason})`);
+  socket.on('disconnect', async () => {
     await User.findOneAndUpdate({ socketId: socket.id }, { socketId: null });
   });
 });
 
-const PORT = config.port || 8080; // Azure typically injects a port, but 8080 is common for containers
+const PORT = process.env.PORT || 8080; 
 
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
