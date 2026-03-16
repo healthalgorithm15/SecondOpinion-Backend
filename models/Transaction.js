@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const TransactionSchema = new mongoose.Schema({
   patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   
-  // 🟢 FIXED: Removed 'required: true' to allow null/empty values for new cases
+  // 🟢 Fixed: Removed required: true to allow null for "new_scan"
   scanId: { type: mongoose.Schema.Types.ObjectId, ref: 'Scan' },
   
   orderId: { type: String, required: true, unique: true },

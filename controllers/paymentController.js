@@ -13,34 +13,35 @@ const SCAN_PRICE_INR = 500;
  * 1. Create Order
  */
 exports.createOrder = async (req, res) => {
-  const { scanId, patientId } = req.body; 
-
   try {
+    // 🟢 Fix: Extract variables FIRST before using them in any object
+    const { scanId, patientId } = req.body; 
+
+    if (!patientId) {
+      return res.status(400).json({ message: "Patient ID is required" });
+    }
+
     const options = {
       amount: SCAN_PRICE_INR * 100, 
       currency: "INR",
-      receipt: `rcpt_${scanId}_${Date.now()}`,
+      // 🟢 Fix: Use a fallback for receipt if scanId is "new_scan"
+      receipt: `rcpt_${scanId === 'new_scan' ? 'new' : scanId}_${Date.now()}`,
       notes: { patientId, scanId } 
     };
 
     const order = await razorpay.orders.create(options);
 
-    // Convert "new_scan" string to null for Mongoose ObjectId compatibility
-   // Inside your createOrder function:
-const { scanId, patientId } = req.body;
+    // 🟢 Fix BSONError: Convert "new_scan" string to null for Mongoose
+    const safeScanId = (scanId === 'new_scan' || !scanId) ? null : scanId;
 
-// 1. Sanitize the scanId for Mongoose
-// If scanId is the string "new_scan", we must pass null to the model
-const safeScanId = (scanId === 'new_scan' || !scanId) ? null : scanId;
+    await Transaction.create({
+      patientId,
+      scanId: safeScanId, 
+      orderId: order.id,
+      amount: SCAN_PRICE_INR,
+      status: 'pending'
+    });
 
-// 2. Create the transaction record
-await Transaction.create({
-  patientId,
-  scanId: safeScanId, // This now works because 'required: true' is gone
-  orderId: order.id,
-  amount: SCAN_PRICE_INR,
-  status: 'pending'
-});
     res.status(200).json(order);
   } catch (error) {
     console.error("Order Creation Error:", error);
@@ -114,7 +115,6 @@ exports.handleWebhook = async (req, res) => {
         }
       );
     }
-
     res.status(200).send('OK');
   } catch (error) {
     console.error("Webhook Error:", error);
