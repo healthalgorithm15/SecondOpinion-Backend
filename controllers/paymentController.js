@@ -10,11 +10,11 @@ const razorpay = new Razorpay({
 const SCAN_PRICE_INR = 500; 
 
 /**
- * 1. Create Order
+ * @desc    Step 1: Create a Razorpay Order
+ * @route   POST /api/payments/create-order
  */
 exports.createOrder = async (req, res) => {
   try {
-    // 🟢 Fix: Extract variables FIRST before using them in any object
     const { scanId, patientId } = req.body; 
 
     if (!patientId) {
@@ -22,16 +22,16 @@ exports.createOrder = async (req, res) => {
     }
 
     const options = {
-      amount: SCAN_PRICE_INR * 100, 
+      amount: SCAN_PRICE_INR * 100, // Razorpay expects paise
       currency: "INR",
-      // 🟢 Fix: Use a fallback for receipt if scanId is "new_scan"
       receipt: `rcpt_${scanId === 'new_scan' ? 'new' : scanId}_${Date.now()}`,
       notes: { patientId, scanId } 
     };
 
     const order = await razorpay.orders.create(options);
 
-    // 🟢 Fix BSONError: Convert "new_scan" string to null for Mongoose
+    // If this is a new scan analysis, we store scanId as null.
+    // This allows the dashboard to find "Unused" credits easily.
     const safeScanId = (scanId === 'new_scan' || !scanId) ? null : scanId;
 
     await Transaction.create({
@@ -44,13 +44,14 @@ exports.createOrder = async (req, res) => {
 
     res.status(200).json(order);
   } catch (error) {
-    console.error("Order Creation Error:", error);
-    res.status(500).json({ message: "Order initialization failed" });
+    console.error("❌ Razorpay Order Error:", error);
+    res.status(500).json({ message: "Failed to initialize payment order" });
   }
 };
 
 /**
- * 2. Verify Payment
+ * @desc    Step 2: Verify Payment Signature
+ * @route   POST /api/payments/verify-payment
  */
 exports.verifyPayment = async (req, res) => {
   try {
@@ -63,7 +64,7 @@ exports.verifyPayment = async (req, res) => {
       .digest("hex");
 
     if (expectedSignature !== razorpay_signature) {
-      return res.status(400).json({ success: false, message: "Fraudulent signature" });
+      return res.status(400).json({ success: false, message: "Fraudulent signature detected" });
     }
 
     const transaction = await Transaction.findOneAndUpdate(
@@ -80,13 +81,14 @@ exports.verifyPayment = async (req, res) => {
 
     res.status(200).json({ success: true, transaction });
   } catch (error) {
-    console.error("Verification Error:", error);
-    res.status(500).json({ message: "Server error during verification" });
+    console.error("❌ Verification Error:", error);
+    res.status(500).json({ message: "Server error during payment verification" });
   }
 };
 
 /**
- * 3. Webhook
+ * @desc    Step 3: Webhook (Fallback for network interruptions)
+ * @route   POST /api/payments/webhook
  */
 exports.handleWebhook = async (req, res) => {
   const secret = process.env.RAZORPAY_WEBHOOK_SECRET; 
@@ -98,26 +100,17 @@ exports.handleWebhook = async (req, res) => {
       .update(JSON.stringify(req.body))
       .digest('hex');
 
-    if (signature !== expectedSignature) {
-      return res.status(400).send('Invalid signature');
-    }
+    if (signature !== expectedSignature) return res.status(400).send('Invalid');
 
     if (req.body.event === 'payment.captured' || req.body.event === 'order.paid') {
       const entity = req.body.payload.payment.entity;
-      
       await Transaction.findOneAndUpdate(
         { orderId: entity.order_id, status: 'pending' },
-        { 
-          paymentId: entity.id, 
-          status: 'paid', 
-          paidAt: new Date(),
-          verifiedBy: 'webhook_server' 
-        }
+        { paymentId: entity.id, status: 'paid', paidAt: new Date(), verifiedBy: 'webhook' }
       );
     }
     res.status(200).send('OK');
   } catch (error) {
-    console.error("Webhook Error:", error);
-    res.status(500).send('Internal Server Error');
+    res.status(500).send('Error');
   }
 };
