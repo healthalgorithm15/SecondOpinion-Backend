@@ -7,18 +7,17 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
 
-// SECURITY: Define the source of truth for prices on the SERVER
 const SCAN_PRICE_INR = 500; 
 
 /**
- * Create Order - Securely initializes payment
+ * 1. Create Order
  */
 exports.createOrder = async (req, res) => {
   const { scanId, patientId } = req.body; 
 
   try {
     const options = {
-      amount: SCAN_PRICE_INR * 100, // Hardcoded on server for safety
+      amount: SCAN_PRICE_INR * 100, 
       currency: "INR",
       receipt: `rcpt_${scanId}_${Date.now()}`,
       notes: { patientId, scanId } 
@@ -26,30 +25,31 @@ exports.createOrder = async (req, res) => {
 
     const order = await razorpay.orders.create(options);
 
-    /**
-     * 🟢 FIX: Handle "new_scan" string.
-     * If the frontend sends "new_scan", we save it as null in the DB
-     * so it satisfies the ObjectId type requirement.
-     */
-    const safeScanId = (scanId === 'new_scan' || !scanId) ? null : scanId;
+    // Convert "new_scan" string to null for Mongoose ObjectId compatibility
+   // Inside your createOrder function:
+const { scanId, patientId } = req.body;
 
-    await Transaction.create({
-      patientId,
-      scanId: safeScanId, 
-      orderId: order.id,
-      amount: SCAN_PRICE_INR,
-      status: 'pending'
-    });
+// 1. Sanitize the scanId for Mongoose
+// If scanId is the string "new_scan", we must pass null to the model
+const safeScanId = (scanId === 'new_scan' || !scanId) ? null : scanId;
 
+// 2. Create the transaction record
+await Transaction.create({
+  patientId,
+  scanId: safeScanId, // This now works because 'required: true' is gone
+  orderId: order.id,
+  amount: SCAN_PRICE_INR,
+  status: 'pending'
+});
     res.status(200).json(order);
   } catch (error) {
     console.error("Order Creation Error:", error);
-    res.status(500).json({ message: "Security Error: Order initialization failed" });
+    res.status(500).json({ message: "Order initialization failed" });
   }
 };
 
 /**
- * Verify Payment - Called by the Mobile App after payment
+ * 2. Verify Payment
  */
 exports.verifyPayment = async (req, res) => {
   try {
@@ -65,7 +65,6 @@ exports.verifyPayment = async (req, res) => {
       return res.status(400).json({ success: false, message: "Fraudulent signature" });
     }
 
-    // Update status only if it's currently 'pending'
     const transaction = await Transaction.findOneAndUpdate(
       { orderId: razorpay_order_id, status: 'pending' },
       { 
@@ -86,7 +85,7 @@ exports.verifyPayment = async (req, res) => {
 };
 
 /**
- * Webhook - The Safety Net for app crashes or internet drops
+ * 3. Webhook
  */
 exports.handleWebhook = async (req, res) => {
   const secret = process.env.RAZORPAY_WEBHOOK_SECRET; 
