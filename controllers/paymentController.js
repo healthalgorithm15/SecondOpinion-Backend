@@ -2,7 +2,6 @@ const crypto = require('crypto');
 const Razorpay = require('razorpay');
 const Transaction = require('../models/Transaction');
 
-
 console.log("Checking Keys:", process.env.RAZORPAY_KEY_ID);
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID,
@@ -28,10 +27,17 @@ exports.createOrder = async (req, res) => {
 
     const order = await razorpay.orders.create(options);
 
+    /**
+     * FIX: Handle "new_scan" string.
+     * Mongoose expects an ObjectId for scanId. If the user is starting a 
+     * fresh analysis, we set scanId to null so the database doesn't crash.
+     */
+    const safeScanId = (scanId === 'new_scan' || !scanId) ? null : scanId;
+
     // Initial status 'pending' ensures we know who tried to pay
     await Transaction.create({
       patientId,
-      scanId,
+      scanId: safeScanId, // Use the safe version here
       orderId: order.id,
       amount: SCAN_PRICE_INR,
       status: 'pending'
@@ -88,6 +94,8 @@ exports.handleWebhook = async (req, res) => {
   const signature = req.headers['x-razorpay-signature'];
 
   try {
+    // Note: Use raw body for webhook verification if possible 
+    // depending on your express middleware setup
     const expectedSignature = crypto
       .createHmac('sha256', secret)
       .update(JSON.stringify(req.body))
