@@ -17,11 +17,30 @@ const SCAN_PRICE_INR = 500;
 exports.createOrder = async (req, res) => {
   try {
     const { scanId, patientId } = req.body;
-
     if (!patientId) return res.status(400).json({ message: "Patient ID is required" });
 
+    // 🟢 PRODUCTION FIX: Check if a pending transaction already exists for this scan/credit
+    const existingOrder = await Transaction.findOne({
+      patientId,
+      scanId: (scanId === 'new_scan' || !scanId) ? null : scanId,
+      status: 'pending',
+      createdAt: { $gt: new Date(Date.now() - 30 * 60 * 1000) } // Only reuse if less than 30 mins old
+    });
+
+    if (existingOrder) {
+      // Re-fetch the order from Razorpay to ensure it hasn't expired
+      try {
+        const order = await razorpay.orders.fetch(existingOrder.orderId);
+        return res.status(200).json(order);
+      } catch (e) {
+        // If order expired on Razorpay side, mark it as failed and move on to create a new one
+        existingOrder.status = 'failed';
+        await existingOrder.save();
+      }
+    }
+
     const options = {
-      amount: Math.floor(SCAN_PRICE_INR * 100), // Razorpay expects paise
+      amount: Math.floor(SCAN_PRICE_INR * 100),
       currency: "INR",
       receipt: `rcpt_${scanId || 'new'}_${Date.now()}`,
       notes: { patientId, scanId: scanId || '' }
@@ -29,10 +48,8 @@ exports.createOrder = async (req, res) => {
 
     const order = await razorpay.orders.create(options);
 
-    // Save transaction in pending state
     await Transaction.create({
       patientId,
-      // If scanId is 'new_scan', it means they are buying a credit before uploading
       scanId: (scanId === 'new_scan' || !scanId) ? null : scanId,
       orderId: order.id,
       amount: SCAN_PRICE_INR,
@@ -66,17 +83,21 @@ exports.verifyPayment = async (req, res) => {
     }
 
     // Atomic Update to prevent race conditions with Webhook
-    const transaction = await Transaction.findOneAndUpdate(
-      { orderId: razorpay_order_id, status: 'pending' },
-      { 
-        paymentId: razorpay_payment_id, 
-        signature: razorpay_signature, 
-        status: 'paid', 
-        paidAt: new Date(), 
-        verifiedBy: 'app_client' 
-      },
-      { new: true }
-    );
+   // Inside verifyPayment...
+const transaction = await Transaction.findOneAndUpdate(
+  { orderId: razorpay_order_id, status: 'pending' },
+  { 
+    paymentId: razorpay_payment_id, 
+    signature: razorpay_signature, 
+    status: 'paid', 
+    paidAt: new Date(), 
+    verifiedBy: 'app_client' 
+  },
+  { new: true }
+);
+
+// 🟢 PRODUCTION ADDITION: Explicitly log this for your production debugging
+console.log(`💰 Payment Verified for User: ${transaction?.patientId} via App Client`);
 
     if (!transaction) {
       const alreadyPaid = await Transaction.findOne({ orderId: razorpay_order_id, status: 'paid' });
