@@ -19,8 +19,8 @@ exports.createOrder = async (req, res) => {
     const pId = new mongoose.Types.ObjectId(patientId);
     const normalizedScanId = (scanId === 'new_scan' || !scanId) ? null : scanId;
 
-    // 🛡️ IDEMPOTENCY GUARD: Check for existing UNUSED 'paid' credit
-    // This prevents the user from paying twice for the same upload.
+    // 🛡️ IDEMPOTENCY GUARD
+    // FIX: Using patientId (matching schema)
     const existingUnusedCredit = await Transaction.findOne({
       patientId: pId,
       status: 'paid',
@@ -35,7 +35,6 @@ exports.createOrder = async (req, res) => {
       });
     }
 
-    // Reuse pending orders from the last 15 mins to avoid cluttering Razorpay Dashboard
     const existingPending = await Transaction.findOne({
       patientId: pId,
       status: 'pending',
@@ -62,7 +61,7 @@ exports.createOrder = async (req, res) => {
     const order = await razorpay.orders.create(options);
 
     await Transaction.create({
-      patientId: pId, // Saved as ObjectId for query consistency
+      patientId: pId, 
       scanId: normalizedScanId,
       orderId: order.id,
       amount: SCAN_PRICE_INR,
@@ -108,7 +107,6 @@ exports.verifyPayment = async (req, res) => {
       return res.status(404).json({ message: "Transaction record not found" });
     }
 
-    // Trigger AI if a specific scan was already contextually linked
     if (transaction.scanId && mongoose.Types.ObjectId.isValid(transaction.scanId)) {
       await ReviewCase.findByIdAndUpdate(transaction.scanId, { status: 'AI_PROCESSING' });
     }

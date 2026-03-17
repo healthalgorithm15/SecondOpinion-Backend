@@ -12,67 +12,43 @@ const mongoose = require('mongoose');
 exports.getDashboard = async (req, res) => {
   try {
     const userId = req.user._id;
-    // Normalize IDs to handle potential type mismatches in existing DB records
-    const patientObjectId = userId;
-    const patientStringId = userId.toString();
 
-    // 1. SCENARIO: Fetch Drafts (Uploaded but not yet submitted for review)
-    const draftReports = await MedicalRecord.find({ 
-      userId, 
-      isSubmitted: false 
-    })
-      .select('title category reportDate createdAt contentType fileName')
-      .sort({ createdAt: -1 })
-      .lean();
-
-    // 2. SCENARIO: Fetch Active Case (The one currently being processed)
+    // 1. Get the most recent active case
+    // FIX: Using ReviewCase (as imported above) instead of undefined 'Case'
     const activeCase = await ReviewCase.findOne({ 
       patientId: userId, 
-      status: { $in: ['AI_PROCESSING', 'PENDING_DOCTOR', 'COMPLETED'] } 
-    })
-      .populate('recordIds', 'title category')
-      .populate('doctorId', 'name specialization')
-      .sort({ createdAt: -1 })
-      .lean();
+      status: { $ne: 'COMPLETED' } 
+    }).sort({ createdAt: -1 });
 
     /**
-     * 🟢 PRODUCTION FIX: Robust Credit Check
-     * Finds 'paid' transactions that haven't been linked to a scan yet.
-     * Checks both ID types to ensure compatibility with all DB entries.
+     * 2. Check for Unused Payment Credit
+     * FIX: We look for 'paid' status where scanId is null or doesn't exist.
+     * This prevents the CastError because we aren't passing "new_scan" to the query.
      */
     const unusedPayment = await Transaction.findOne({
-      patientId: { $in: [patientObjectId, patientStringId] },
+      patientId: userId, // Ensure we use patientId to match the Transaction schema
       status: 'paid',
       $or: [
-        { scanId: null },
-        { scanId: 'new_scan' },
-        { scanId: { $exists: false } }
+        { scanId: { $exists: false } },
+        { scanId: null }
       ]
-    }).sort({ paidAt: -1 });
+    });
 
-    // Format draft reports with viewing URLs for the frontend
-    const formattedDrafts = draftReports.map(r => ({
-      ...r,
-      _id: r._id.toString(),
-      displayUrl: `${config.appUrl}/api/patient/view/${r._id}`
-    }));
-
-    res.status(200).json({ 
-      success: true, 
-      data: { 
-        user: { name: req.user.name, _id: userId },
-        reports: formattedDrafts, 
-        activeCase: activeCase,   
-        hasActivePayment: !!unusedPayment, 
-        stats: { 
-          totalDrafts: draftReports.length,
-          hasActiveCase: !!activeCase
-        }
+    return res.status(200).json({
+      success: true,
+      data: {
+        user: {
+          name: req.user.name,
+          email: req.user.email,
+          _id: req.user._id
+        },
+        activeCase: activeCase || null,
+        hasActivePayment: !!unusedPayment // Boolean: true if credit exists
       }
     });
   } catch (error) {
     console.error("Dashboard Error:", error);
-    res.status(500).json({ success: false, message: "Error loading dashboard." });
+    return res.status(500).json({ success: false, message: "Internal Server Error" });
   }
 };
 
@@ -88,7 +64,6 @@ exports.submitReview = async (req, res) => {
   try {
     let newCaseId;
     const patientObjectId = userId;
-    const patientStringId = userId.toString();
 
     await session.withTransaction(async () => {
       // 1. Verify ownership of the draft records
@@ -102,9 +77,10 @@ exports.submitReview = async (req, res) => {
       }
 
       // 2. 🟢 Verify and Consume Payment Credit
-      // We look for a valid payment that hasn't been used (scanId is empty)
+      // We look for a valid payment that hasn't been used (scanId is empty or 'new_scan')
+      // FIX: Standardized to patientId
       const paymentCredit = await Transaction.findOne({
-        patientId: { $in: [patientObjectId, patientStringId] },
+        patientId: patientObjectId,
         status: 'paid',
         $or: [
           { scanId: null },
