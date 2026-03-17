@@ -14,7 +14,6 @@ exports.getDashboard = async (req, res) => {
     const userId = req.user._id;
 
     // 1. Get the most recent active case
-    // FIX: Using ReviewCase (as imported above) instead of undefined 'Case'
     const activeCase = await ReviewCase.findOne({ 
       patientId: userId, 
       status: { $ne: 'COMPLETED' } 
@@ -22,17 +21,27 @@ exports.getDashboard = async (req, res) => {
 
     /**
      * 2. Check for Unused Payment Credit
-     * FIX: We look for 'paid' status where scanId is null or doesn't exist.
-     * This prevents the CastError because we aren't passing "new_scan" to the query.
+     * Optimized to check for standard 'paid' transactions without a linked scanId.
      */
     const unusedPayment = await Transaction.findOne({
-      patientId: userId, // Ensure we use patientId to match the Transaction schema
+      patientId: userId,
       status: 'paid',
       $or: [
         { scanId: { $exists: false } },
-        { scanId: null }
+        { scanId: null },
+        { scanId: 'new_scan' }
       ]
     });
+
+    /**
+     * 🟢 PRODUCTION FIX: Fetch Draft Reports
+     * The frontend needs the list of uploaded documents that are NOT yet submitted.
+     * Without this, the UploadView will show "No Documents".
+     */
+    const draftReports = await MedicalRecord.find({ 
+      userId: userId, 
+      isSubmitted: false 
+    }).select('title category reportDate fileName fileType createdAt').sort({ createdAt: -1 });
 
     return res.status(200).json({
       success: true,
@@ -43,7 +52,8 @@ exports.getDashboard = async (req, res) => {
           _id: req.user._id
         },
         activeCase: activeCase || null,
-        hasActivePayment: !!unusedPayment // Boolean: true if credit exists
+        hasActivePayment: !!unusedPayment,
+        draftReports: draftReports || [] // 👈 Essential for frontend UploadView
       }
     });
   } catch (error) {
@@ -59,28 +69,31 @@ exports.getDashboard = async (req, res) => {
 exports.submitReview = async (req, res) => {
   const { reportIds } = req.body; 
   const userId = req.user._id;
+
+  if (!reportIds || reportIds.length === 0) {
+    return res.status(400).json({ success: false, message: "No reports selected for submission." });
+  }
+
   const session = await mongoose.startSession();
   
   try {
     let newCaseId;
-    const patientObjectId = userId;
 
     await session.withTransaction(async () => {
-      // 1. Verify ownership of the draft records
+      // 1. Verify ownership and existence of the draft records
       const ownedRecords = await MedicalRecord.find({ 
         _id: { $in: reportIds }, 
-        userId: userId 
+        userId: userId,
+        isSubmitted: false // Only allow submitting drafts
       }).session(session);
 
       if (ownedRecords.length !== reportIds.length) {
-        throw new Error("UNAUTHORIZED_ACCESS");
+        throw new Error("UNAUTHORIZED_ACCESS_OR_INVALID_RECORDS");
       }
 
-      // 2. 🟢 Verify and Consume Payment Credit
-      // We look for a valid payment that hasn't been used (scanId is empty or 'new_scan')
-      // FIX: Standardized to patientId
+      // 2. Verify and Consume Payment Credit
       const paymentCredit = await Transaction.findOne({
-        patientId: patientObjectId,
+        patientId: userId,
         status: 'paid',
         $or: [
           { scanId: null },
@@ -102,11 +115,11 @@ exports.submitReview = async (req, res) => {
       await newCase.save({ session });
       newCaseId = newCase._id;
 
-      // 4. 🟢 Mark credit as "Used" by linking it to the new Case ID
+      // 4. Mark credit as "Used"
       paymentCredit.scanId = newCaseId;
       await paymentCredit.save({ session });
 
-      // 5. Mark draft records as submitted so they move to the vault
+      // 5. Mark draft records as submitted
       await MedicalRecord.updateMany(
         { _id: { $in: reportIds } }, 
         { $set: { isSubmitted: true } }, 
@@ -123,13 +136,24 @@ exports.submitReview = async (req, res) => {
     }
 
     // 7. Trigger the AI background service
-    aiService.analyzeReports(newCaseId); 
+    // Ensure aiService is robust enough to handle the caseId
+    aiService.analyzeReports(newCaseId).catch(err => console.error("AI Service Error:", err)); 
 
     res.status(200).json({ success: true, caseId: newCaseId });
   } catch (error) {
     console.error("Submit Review Error:", error);
-    const status = error.message === "NO_ACTIVE_PAYMENT" ? 402 : 500;
-    res.status(status).json({ success: false, message: error.message });
+    let statusCode = 500;
+    let message = "Internal Server Error";
+
+    if (error.message === "NO_ACTIVE_PAYMENT") {
+      statusCode = 402;
+      message = "No active analysis credit found. Please purchase a credit.";
+    } else if (error.message === "UNAUTHORIZED_ACCESS_OR_INVALID_RECORDS") {
+      statusCode = 403;
+      message = "Some records are invalid or already submitted.";
+    }
+
+    res.status(statusCode).json({ success: false, message });
   } finally {
     session.endSession();
   }
@@ -145,6 +169,11 @@ exports.reuseRecord = async (req, res) => {
 
     const original = await MedicalRecord.findById(reportId);
     if (!original) return res.status(404).json({ success: false, message: "Record not found." });
+
+    // Ensure they can't clone someone else's record
+    if (original.userId.toString() !== userId.toString()) {
+      return res.status(403).json({ success: false, message: "Unauthorized." });
+    }
 
     const reusedRecord = new MedicalRecord({
       userId,
