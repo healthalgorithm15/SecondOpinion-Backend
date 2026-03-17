@@ -29,7 +29,7 @@ exports.getDashboard = async (req, res) => {
       $or: [
         { scanId: { $exists: false } },
         { scanId: null },
-        { scanId: 'new_scan' }
+       // { scanId: 'new_scan' }
       ]
     });
 
@@ -97,7 +97,7 @@ exports.submitReview = async (req, res) => {
         status: 'paid',
         $or: [
           { scanId: null },
-          { scanId: 'new_scan' },
+         // { scanId: 'new_scan' },
           { scanId: { $exists: false } }
         ]
       }).session(session);
