@@ -1,6 +1,6 @@
 const MedicalRecord = require('../models/MedicalRecord');
 const ReviewCase = require('../models/ReviewCase');
-const Transaction = require('../models/Transaction'); // Added for credit check
+const Transaction = require('../models/Transaction'); 
 const aiService = require('../services/aiService');
 const config = require('../config');
 const mongoose = require('mongoose');
@@ -12,8 +12,11 @@ const mongoose = require('mongoose');
 exports.getDashboard = async (req, res) => {
   try {
     const userId = req.user._id;
+    // 🟢 PRODUCTION FIX: Prepare both ID types to match the database (String vs ObjectId)
+    const patientObjectId = userId;
+    const patientStringId = userId.toString();
 
-    // 1. SCENARIO 2: Fetch Drafts (Uploaded but not yet submitted for review)
+    // 1. SCENARIO 2: Fetch Drafts (Uploaded but not yet submitted)
     const draftReports = await MedicalRecord.find({ 
       userId, 
       isSubmitted: false 
@@ -22,7 +25,7 @@ exports.getDashboard = async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    // 2. SCENARIO 3: Fetch Active Case (The "Under Review" state)
+    // 2. SCENARIO 3: Fetch Active Case (Under Review)
     const activeCase = await ReviewCase.findOne({ 
       patientId: userId, 
       status: { $in: ['AI_PROCESSING', 'PENDING_DOCTOR', 'COMPLETED'] } 
@@ -32,14 +35,22 @@ exports.getDashboard = async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    // 🟢 ADDED: Check if user has a PAID transaction not yet linked to a case
+    /**
+     * 🟢 PRODUCTION FIX: Robust Credit Check
+     * Matches the ID whether it was stored as a String (as seen in your screenshot) 
+     * or a proper ObjectId.
+     */
     const unusedPayment = await Transaction.findOne({
-      patientId: userId,
+      patientId: { $in: [patientObjectId, patientStringId] },
       status: 'paid',
-      scanId: null 
-    });
+      $or: [
+        { scanId: null },
+        { scanId: 'new_scan' },
+        { scanId: { $exists: false } }
+      ]
+    }).sort({ paidAt: -1 });
 
-    // Format draft reports with viewing URLs (Keep original logic)
+    // Format draft reports with viewing URLs
     const formattedDrafts = draftReports.map(r => ({
       ...r,
       _id: r._id.toString(),
@@ -49,10 +60,10 @@ exports.getDashboard = async (req, res) => {
     res.status(200).json({ 
       success: true, 
       data: { 
-        user: { name: req.user.name, _id: userId }, // Structured for frontend access
+        user: { name: req.user.name, _id: userId },
         reports: formattedDrafts, 
         activeCase: activeCase,   
-        hasActivePayment: !!unusedPayment, // 🟢 ADDED: Required for frontend gate
+        hasActivePayment: !!unusedPayment, 
         stats: { 
           totalDrafts: draftReports.length,
           hasActiveCase: !!activeCase
@@ -76,8 +87,12 @@ exports.submitReview = async (req, res) => {
   
   try {
     let newCaseId;
+    // 🟢 PRODUCTION FIX: Define IDs for the transaction scope
+    const patientObjectId = userId;
+    const patientStringId = userId.toString();
+
     await session.withTransaction(async () => {
-      // 1. Verify ownership of records (Keep original logic)
+      // 1. Verify ownership of records
       const ownedRecords = await MedicalRecord.find({ 
         _id: { $in: reportIds }, 
         userId: userId 
@@ -87,18 +102,22 @@ exports.submitReview = async (req, res) => {
         throw new Error("UNAUTHORIZED_ACCESS");
       }
 
-      // 🟢 ADDED: Verify and Consume Payment Credit
+      // 2. Verify and Consume Payment Credit (using robust ID check)
       const paymentCredit = await Transaction.findOne({
-        patientId: userId,
+        patientId: { $in: [patientObjectId, patientStringId] },
         status: 'paid',
-        scanId: null
+        $or: [
+          { scanId: null },
+          { scanId: 'new_scan' },
+          { scanId: { $exists: false } }
+        ]
       }).session(session);
 
       if (!paymentCredit) {
         throw new Error("NO_ACTIVE_PAYMENT");
       }
 
-      // 2. Create the Review Case (Keep original logic)
+      // 3. Create the Review Case
       const newCase = new ReviewCase({ 
         patientId: userId, 
         recordIds: reportIds, 
@@ -107,11 +126,11 @@ exports.submitReview = async (req, res) => {
       await newCase.save({ session });
       newCaseId = newCase._id;
 
-      // 🟢 ADDED: Link the payment to this specific case so it's "used"
+      // 4. Link the payment to this specific case so it's "used"
       paymentCredit.scanId = newCaseId;
       await paymentCredit.save({ session });
 
-      // 3. Mark records as submitted (Keep original logic)
+      // 5. Mark records as submitted
       await MedicalRecord.updateMany(
         { _id: { $in: reportIds } }, 
         { $set: { isSubmitted: true } }, 
@@ -119,7 +138,7 @@ exports.submitReview = async (req, res) => {
       );
     });
 
-    // 4. Socket.io Emit (Keep original logic)
+    // 6. Socket.io Emit
     if (global.io) {
       global.io.to('doctor').emit('new_case_submitted', { 
         caseId: newCaseId, 
@@ -127,13 +146,12 @@ exports.submitReview = async (req, res) => {
       });
     }
 
-    // 5. Trigger AI Analysis (Keep original logic)
+    // 7. Trigger AI Analysis
     aiService.analyzeReports(newCaseId); 
 
     res.status(200).json({ success: true, caseId: newCaseId });
   } catch (error) {
     console.error("Submit Review Error:", error);
-    // Return 402 if it's a payment issue, 500 otherwise
     const status = error.message === "NO_ACTIVE_PAYMENT" ? 402 : 500;
     res.status(status).json({ success: false, message: error.message });
   } finally {
@@ -142,7 +160,7 @@ exports.submitReview = async (req, res) => {
 };
 
 /**
- * @desc    Reuse a record from the Medical Vault (Keep original logic)
+ * @desc    Reuse a record from the Medical Vault
  */
 exports.reuseRecord = async (req, res) => {
   try {
@@ -172,7 +190,7 @@ exports.reuseRecord = async (req, res) => {
 };
 
 /**
- * @desc    Upload Medical Record (Keep original logic)
+ * @desc    Upload Medical Record
  */
 exports.uploadRecord = async (req, res) => {
   try {
@@ -205,7 +223,7 @@ exports.uploadRecord = async (req, res) => {
 };
 
 /**
- * @desc    Track status of a specific case (Keep original logic)
+ * @desc    Track status of a specific case
  */
 exports.getCaseStatus = async (req, res) => {
   try {
@@ -231,7 +249,7 @@ exports.getCaseStatus = async (req, res) => {
 };
 
 /**
- * @desc    View Medical Document (Keep original logic)
+ * @desc    View Medical Document
  */
 exports.viewLocalFile = async (req, res) => {
   try {
@@ -255,7 +273,7 @@ exports.viewLocalFile = async (req, res) => {
 };
 
 /**
- * @desc    Delete a record (Keep original logic)
+ * @desc    Delete a record
  */
 exports.deleteRecord = async (req, res) => {
   try {
@@ -274,7 +292,7 @@ exports.deleteRecord = async (req, res) => {
 };
 
 /**
- * @desc    Fetch Case History (Keep original logic)
+ * @desc    Fetch Case History
  */
 exports.getReviewHistory = async (req, res) => {
   try {
