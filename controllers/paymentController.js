@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const Razorpay = require('razorpay');
 const Transaction = require('../models/Transaction');
 const ReviewCase = require('../models/ReviewCase'); 
-const mongoose = require('mongoose'); // 🟢 Added for ObjectId casting
+const mongoose = require('mongoose');
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID,
@@ -11,49 +11,58 @@ const razorpay = new Razorpay({
 
 const SCAN_PRICE_INR = 500;
 
-/**
- * 1. Create Order
- * Triggers when the user clicks 'Get Credit' or 'Pay'
- */
 exports.createOrder = async (req, res) => {
   try {
     const { scanId, patientId } = req.body;
     if (!patientId) return res.status(400).json({ message: "Patient ID is required" });
 
-    // 🟢 PRODUCTION FIX: Cast patientId to ObjectId to prevent String mismatch in DB
-    const patientObjId = new mongoose.Types.ObjectId(patientId);
+    const pId = new mongoose.Types.ObjectId(patientId);
     const normalizedScanId = (scanId === 'new_scan' || !scanId) ? null : scanId;
 
-    // Check for existing pending orders to prevent duplicate Razorpay order creation
-    const existingOrder = await Transaction.findOne({
-      patientId: { $in: [patientId, patientObjId] }, // 🟢 Robust search
-      scanId: normalizedScanId,
-      status: 'pending',
-      createdAt: { $gt: new Date(Date.now() - 20 * 60 * 1000) } // Reduced to 20 mins for safety
+    // 🛡️ IDEMPOTENCY GUARD: Check for existing UNUSED 'paid' credit
+    // This prevents the user from paying twice for the same upload.
+    const existingUnusedCredit = await Transaction.findOne({
+      patientId: pId,
+      status: 'paid',
+      scanId: null 
     });
 
-    if (existingOrder) {
+    if (existingUnusedCredit) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "You already have an unused credit. Please proceed to upload reports.",
+        code: "UNUSED_CREDIT_EXISTS"
+      });
+    }
+
+    // Reuse pending orders from the last 15 mins to avoid cluttering Razorpay Dashboard
+    const existingPending = await Transaction.findOne({
+      patientId: pId,
+      status: 'pending',
+      createdAt: { $gt: new Date(Date.now() - 15 * 60 * 1000) }
+    });
+
+    if (existingPending) {
       try {
-        const order = await razorpay.orders.fetch(existingOrder.orderId);
+        const order = await razorpay.orders.fetch(existingPending.orderId);
         return res.status(200).json(order);
       } catch (e) {
-        existingOrder.status = 'failed';
-        await existingOrder.save();
+        existingPending.status = 'failed';
+        await existingPending.save();
       }
     }
 
     const options = {
       amount: Math.floor(SCAN_PRICE_INR * 100),
       currency: "INR",
-      receipt: `rcpt_${scanId || 'new'}_${Date.now()}`,
-      notes: { patientId: patientId.toString(), scanId: scanId || '' }
+      receipt: `rcpt_${Date.now()}`,
+      notes: { patientId: patientId.toString() }
     };
 
     const order = await razorpay.orders.create(options);
 
-    // 🟢 PRODUCTION FIX: Save with proper ObjectId type
     await Transaction.create({
-      patientId: patientObjId, 
+      patientId: pId, // Saved as ObjectId for query consistency
       scanId: normalizedScanId,
       orderId: order.id,
       amount: SCAN_PRICE_INR,
@@ -67,15 +76,10 @@ exports.createOrder = async (req, res) => {
   }
 };
 
-/**
- * 2. Verify Payment (App-side Handshake)
- * Triggers immediately after Razorpay UI closes successfully
- */
 exports.verifyPayment = async (req, res) => {
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
 
-    // Signature Verification
     const body = razorpay_order_id + "|" + razorpay_payment_id;
     const expectedSignature = crypto
       .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
@@ -86,7 +90,6 @@ exports.verifyPayment = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid signature" });
     }
 
-    // Atomic Update to prevent race conditions with Webhook
     const transaction = await Transaction.findOneAndUpdate(
       { orderId: razorpay_order_id, status: 'pending' },
       { 
@@ -105,13 +108,9 @@ exports.verifyPayment = async (req, res) => {
       return res.status(404).json({ message: "Transaction record not found" });
     }
 
-    console.log(`💰 Payment Verified for User: ${transaction.patientId} via App Client`);
-
-    // ✅ ReviewCase Hook - Move to AI_PROCESSING state only if a specific scan was targeted
+    // Trigger AI if a specific scan was already contextually linked
     if (transaction.scanId && mongoose.Types.ObjectId.isValid(transaction.scanId)) {
-      await ReviewCase.findByIdAndUpdate(transaction.scanId, { 
-        status: 'AI_PROCESSING' 
-      });
+      await ReviewCase.findByIdAndUpdate(transaction.scanId, { status: 'AI_PROCESSING' });
     }
 
     res.status(200).json({ success: true, transaction });
@@ -121,10 +120,6 @@ exports.verifyPayment = async (req, res) => {
   }
 };
 
-/**
- * 3. Webhook (Server-to-Server Fallback)
- * Handles cases where user's app crashes after payment
- */
 exports.handleWebhook = async (req, res) => {
   const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
   const signature = req.headers['x-razorpay-signature'];
@@ -134,37 +129,25 @@ exports.handleWebhook = async (req, res) => {
     hmac.update(JSON.stringify(req.body));
     const expectedSignature = hmac.digest('hex');
 
-    if (signature !== expectedSignature) {
-      return res.status(400).send('Invalid Signature');
-    }
+    if (signature !== expectedSignature) return res.status(400).send('Invalid Signature');
 
     const { event, payload } = req.body;
-
     if (event === 'payment.captured' || event === 'order.paid') {
       const entity = payload.payment ? payload.payment.entity : payload.order.entity;
       const orderId = entity.order_id || entity.id;
 
       const transaction = await Transaction.findOneAndUpdate(
         { orderId: orderId, status: 'pending' },
-        { 
-          paymentId: entity.id, 
-          status: 'paid', 
-          paidAt: new Date(), 
-          verifiedBy: 'webhook' 
-        },
+        { paymentId: entity.id, status: 'paid', paidAt: new Date(), verifiedBy: 'webhook' },
         { new: true }
       );
 
-      // Webhook fallback: update ReviewCase model if scanId is a valid ObjectId
       if (transaction && transaction.scanId && mongoose.Types.ObjectId.isValid(transaction.scanId)) {
-        await ReviewCase.findByIdAndUpdate(transaction.scanId, { 
-          status: 'AI_PROCESSING' 
-        });
+        await ReviewCase.findByIdAndUpdate(transaction.scanId, { status: 'AI_PROCESSING' });
       }
     }
     res.status(200).send('OK');
   } catch (error) {
-    console.error("❌ Webhook Error:", error);
     res.status(500).send('Error');
   }
 };

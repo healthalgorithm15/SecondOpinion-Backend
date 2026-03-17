@@ -12,11 +12,11 @@ const mongoose = require('mongoose');
 exports.getDashboard = async (req, res) => {
   try {
     const userId = req.user._id;
-    // 🟢 PRODUCTION FIX: Prepare both ID types to match the database (String vs ObjectId)
+    // Normalize IDs to handle potential type mismatches in existing DB records
     const patientObjectId = userId;
     const patientStringId = userId.toString();
 
-    // 1. SCENARIO 2: Fetch Drafts (Uploaded but not yet submitted)
+    // 1. SCENARIO: Fetch Drafts (Uploaded but not yet submitted for review)
     const draftReports = await MedicalRecord.find({ 
       userId, 
       isSubmitted: false 
@@ -25,7 +25,7 @@ exports.getDashboard = async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    // 2. SCENARIO 3: Fetch Active Case (Under Review)
+    // 2. SCENARIO: Fetch Active Case (The one currently being processed)
     const activeCase = await ReviewCase.findOne({ 
       patientId: userId, 
       status: { $in: ['AI_PROCESSING', 'PENDING_DOCTOR', 'COMPLETED'] } 
@@ -37,8 +37,8 @@ exports.getDashboard = async (req, res) => {
 
     /**
      * 🟢 PRODUCTION FIX: Robust Credit Check
-     * Matches the ID whether it was stored as a String (as seen in your screenshot) 
-     * or a proper ObjectId.
+     * Finds 'paid' transactions that haven't been linked to a scan yet.
+     * Checks both ID types to ensure compatibility with all DB entries.
      */
     const unusedPayment = await Transaction.findOne({
       patientId: { $in: [patientObjectId, patientStringId] },
@@ -50,7 +50,7 @@ exports.getDashboard = async (req, res) => {
       ]
     }).sort({ paidAt: -1 });
 
-    // Format draft reports with viewing URLs
+    // Format draft reports with viewing URLs for the frontend
     const formattedDrafts = draftReports.map(r => ({
       ...r,
       _id: r._id.toString(),
@@ -87,12 +87,11 @@ exports.submitReview = async (req, res) => {
   
   try {
     let newCaseId;
-    // 🟢 PRODUCTION FIX: Define IDs for the transaction scope
     const patientObjectId = userId;
     const patientStringId = userId.toString();
 
     await session.withTransaction(async () => {
-      // 1. Verify ownership of records
+      // 1. Verify ownership of the draft records
       const ownedRecords = await MedicalRecord.find({ 
         _id: { $in: reportIds }, 
         userId: userId 
@@ -102,7 +101,8 @@ exports.submitReview = async (req, res) => {
         throw new Error("UNAUTHORIZED_ACCESS");
       }
 
-      // 2. Verify and Consume Payment Credit (using robust ID check)
+      // 2. 🟢 Verify and Consume Payment Credit
+      // We look for a valid payment that hasn't been used (scanId is empty)
       const paymentCredit = await Transaction.findOne({
         patientId: { $in: [patientObjectId, patientStringId] },
         status: 'paid',
@@ -126,11 +126,11 @@ exports.submitReview = async (req, res) => {
       await newCase.save({ session });
       newCaseId = newCase._id;
 
-      // 4. Link the payment to this specific case so it's "used"
+      // 4. 🟢 Mark credit as "Used" by linking it to the new Case ID
       paymentCredit.scanId = newCaseId;
       await paymentCredit.save({ session });
 
-      // 5. Mark records as submitted
+      // 5. Mark draft records as submitted so they move to the vault
       await MedicalRecord.updateMany(
         { _id: { $in: reportIds } }, 
         { $set: { isSubmitted: true } }, 
@@ -138,7 +138,7 @@ exports.submitReview = async (req, res) => {
       );
     });
 
-    // 6. Socket.io Emit
+    // 6. Notify doctors via Socket.io
     if (global.io) {
       global.io.to('doctor').emit('new_case_submitted', { 
         caseId: newCaseId, 
@@ -146,7 +146,7 @@ exports.submitReview = async (req, res) => {
       });
     }
 
-    // 7. Trigger AI Analysis
+    // 7. Trigger the AI background service
     aiService.analyzeReports(newCaseId); 
 
     res.status(200).json({ success: true, caseId: newCaseId });
@@ -160,7 +160,7 @@ exports.submitReview = async (req, res) => {
 };
 
 /**
- * @desc    Reuse a record from the Medical Vault
+ * @desc    Reuse a record from the Medical Vault (creates a new draft copy)
  */
 exports.reuseRecord = async (req, res) => {
   try {
@@ -190,7 +190,7 @@ exports.reuseRecord = async (req, res) => {
 };
 
 /**
- * @desc    Upload Medical Record
+ * @desc    Upload Medical Record (saves to drafts)
  */
 exports.uploadRecord = async (req, res) => {
   try {
@@ -223,7 +223,7 @@ exports.uploadRecord = async (req, res) => {
 };
 
 /**
- * @desc    Track status of a specific case
+ * @desc    Track status of a specific case (UI Progress Tracker)
  */
 exports.getCaseStatus = async (req, res) => {
   try {
@@ -249,13 +249,14 @@ exports.getCaseStatus = async (req, res) => {
 };
 
 /**
- * @desc    View Medical Document
+ * @desc    View Medical Document (Serves binary data with correct headers)
  */
 exports.viewLocalFile = async (req, res) => {
   try {
     const record = await MedicalRecord.findById(req.params.id);
     if (!record) return res.status(404).json({ success: false, message: "Record not found." });
 
+    // Authorization check
     if (record.userId.toString() !== req.user._id.toString() && req.user.role !== 'doctor') {
       return res.status(403).json({ success: false, message: "Access denied." });
     }
@@ -273,7 +274,7 @@ exports.viewLocalFile = async (req, res) => {
 };
 
 /**
- * @desc    Delete a record
+ * @desc    Delete a draft record
  */
 exports.deleteRecord = async (req, res) => {
   try {
@@ -292,7 +293,7 @@ exports.deleteRecord = async (req, res) => {
 };
 
 /**
- * @desc    Fetch Case History
+ * @desc    Fetch Complete Case History (Vault)
  */
 exports.getReviewHistory = async (req, res) => {
   try {
