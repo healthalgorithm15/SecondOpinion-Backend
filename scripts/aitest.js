@@ -1,11 +1,11 @@
 require('dotenv').config();
-const { GoogleGenAI } = require("@google/genai"); // 2026 SDK
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 const fs = require('fs');
 const path = require('path');
-
 const PDFDocument = require('pdfkit');
+
 /**
- * Helper to clean Markdown formatting from AI responses
+ * Helper to clean Markdown formatting if the AI ignores "STRICT RULES"
  */
 const cleanJSON = (text) => {
   return text.replace(/```json|```/g, "").trim();
@@ -15,11 +15,13 @@ async function runProductionTest() {
   console.log("🚀 Initializing Medical AI Test...");
 
   // 1. Initialize Client
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  
+  // 2. Initialize the specific model instance
+  // Note: Using 'gemini-1.5-flash' as '2.5' is not a standard public endpoint yet
+  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
   try {
-    // 2. Load Sample File (Simulating MongoDB Buffer)
-    // Make sure 'sample-report.jpg' exists in your /scripts folder!
     const filePath = path.join(__dirname, 'ecg.jpg'); 
     
     if (!fs.existsSync(filePath)) {
@@ -29,71 +31,76 @@ async function runProductionTest() {
     const fileBuffer = fs.readFileSync(filePath);
     const base64Data = fileBuffer.toString('base64');
 
-    console.log("🧬 Document loaded. Sending to Gemini 2.5-Flash...");
+    console.log("🧬 Document loaded. Sending to Gemini...");
 
-    // 3. The Production Prompt & Execution
-    const result = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: [
-        {
-          inlineData: {
-            mimeType: "image/jpeg", 
-            data: base64Data
-          }
-        },
-        {
-          text: `
-            SYSTEM: You are a Clinical Assistant. 
-            TASK: Extract data from this medical report.
-            
-            STRICT RULES:
-            - Provide a 2-sentence summary.
-            - Determine RiskLevel: Low, Medium, or High.
-            - List key markers found (e.g., Hemoglobin, Glucose).
-            - Return ONLY raw JSON. No markdown, no backticks.
-
-            JSON STRUCTURE:
-            {
-              "summary": "string",
-              "riskLevel": "string",
-              "markers": ["string"]
-            }
-          `
+    // 3. Execution using the model instance
+    const result = await model.generateContent([
+      {
+        inlineData: {
+          mimeType: "image/jpeg", 
+          data: base64Data
         }
-      ]
-    });
+      },
+      {
+        text: `
+          SYSTEM: You are a Clinical Assistant. 
+          TASK: Extract data from this medical report.
+          
+          STRICT RULES:
+          - Provide a 2-sentence summary.
+          - Determine RiskLevel: Low, Medium, or High.
+          - List key markers found (e.g., Hemoglobin, Glucose).
+          - Return ONLY raw JSON. No markdown, no backticks.
 
-    // 4. Clean and Parse the result
-    const responseText = result.text || result.response?.text || (typeof result === 'string' ? result : "");
+          JSON STRUCTURE:
+          {
+            "summary": "string",
+            "riskLevel": "string",
+            "markers": ["string"]
+          }
+        `
+      }
+    ]);
+
+    // 4. Extract and Parse
+    const response = await result.response;
+    let responseText = response.text();
     
-    if (!responseText) {
-       console.log("Full Result Debug:", JSON.stringify(result, null, 2));
-       throw new Error("AI returned an empty response or structure is different.");
-    }
-    const aiData = JSON.parse(responseText);
+    // Safety clean in case AI includes markdown backticks
+    responseText = cleanJSON(responseText);
 
-    // 3. PDF Generation
+    const aiData = JSON.parse(responseText);
+    console.log("✅ AI Analysis Received:", aiData);
+
+    // 5. PDF Generation
     const doc = new PDFDocument();
     const outputName = `Analysis_${Date.now()}.pdf`;
-    doc.pipe(fs.createWriteStream(path.join(__dirname, outputName)));
+    const outputPath = path.join(__dirname, outputName);
+    
+    const stream = fs.createWriteStream(outputPath);
+    doc.pipe(stream);
 
-    // PDF Content
     doc.fontSize(20).text('MEDICAL REPORT SUMMARY', { align: 'center' });
     doc.moveDown();
-    doc.fontSize(12).text(`Risk Level: ${aiData.riskLevel}`, { 
-      color: aiData.riskLevel === 'High' ? 'red' : 'black' 
-    });
-    doc.moveDown().text(`Summary: ${aiData.summary}`);
+    
+    const riskColor = aiData.riskLevel === 'High' ? '#FF0000' : '#000000';
+    doc.fontSize(14).fillColor(riskColor).text(`Risk Level: ${aiData.riskLevel}`);
+    
+    doc.moveDown().fillColor('#000000').fontSize(12).text(`Summary: ${aiData.summary}`);
     doc.moveDown().text('Key Markers:');
+    
     aiData.markers.forEach(m => doc.text(`- ${m}`));
     
     doc.end();
-    console.log(`✅ Success! PDF created: ${outputName}`);
+
+    stream.on('finish', () => {
+      console.log(`\n📄 Success! PDF created: ${outputName}`);
+    });
 
   } catch (error) {
-    console.error("❌ TEST FAILED:");
+    console.error("\n❌ TEST FAILED:");
     if (error instanceof SyntaxError) {
-      console.error("Data was not valid JSON. Raw response was:", error.message);
+      console.error("Data was not valid JSON. Response received was not parseable.");
     } else {
       console.error(error.message);
     }
