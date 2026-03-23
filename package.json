@@ -12,7 +12,6 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "@google/generative-ai": "^0.24.1",
     "axios": "^1.13.4",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
@@ -27,6 +26,7 @@
     "mongoose": "^9.1.5",
     "multer": "^2.0.2",
     "nodemailer": "^8.0.0",
+    "openai": "^6.32.0",
     "pdfkit": "^0.17.2",
     "razorpay": "^2.9.6",
     "socket.io": "^4.8.3"

@@ -1,126 +1,119 @@
-const { GoogleGenerativeAI, SchemaType } = require("@google/generative-ai");
+const { AzureOpenAI } = require("openai");
 const ReviewCase = require('../models/ReviewCase');
 const caseController = require('../controllers/caseController');
 
-// Initialize with modern SDK structure
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+// --- 1. CONFIGURATION ---
+const USE_MOCK_AI = process.env.USE_MOCK_AI === 'true';
+
+// Initialize Azure Client
+let azureClient = null;
+if (process.env.AZURE_OPENAI_KEY && process.env.AZURE_OPENAI_ENDPOINT) {
+    azureClient = new AzureOpenAI({
+        endpoint: process.env.AZURE_OPENAI_ENDPOINT,
+        apiKey: process.env.AZURE_OPENAI_KEY,
+        apiVersion: "2024-06-01", 
+        deployment: process.env.AZURE_DEPLOYMENT_NAME || "gpt-4o",
+    });
+}
 
 /**
- * 🤖 Main Service: Analyzes medical reports with strict JSON output
+ * Mock Data for local testing
  */
-exports.analyzeReports = async (caseId, attempt = 0) => {
-    // Standardizing on stable production model names
-    const MODELS = ["gemini-1.5-flash", "gemini-1.5-pro"];
-    const currentModelName = MODELS[attempt] || MODELS[0];
+const getMockResponse = () => ({
+    summary: "[MOCK] Automated analysis successful. No acute cardiac abnormalities detected.",
+    riskLevel: "Low",
+    markers: ["Heart Rate: 72bpm", "Rhythm: Sinus"]
+});
 
-    console.log(`🤖 AI Attempt ${attempt + 1}: Using ${currentModelName} for Case ${caseId}`);
-
+exports.analyzeReports = async (caseId) => {
+    console.log(`🚀 Starting Analysis Flow for Case: ${caseId}`);
+    
     try {
         const currentCase = await ReviewCase.findById(caseId).populate('recordIds');
-        
-        if (!currentCase || !currentCase.recordIds || currentCase.recordIds.length === 0) {
-            console.error("❌ Case or records missing/empty.");
-            return;
+        if (!currentCase || !currentCase.recordIds.length) {
+            throw new Error("Case or patient records not found in database.");
         }
 
-        // Initialize model with Strict Schema Enforcement
-        const model = genAI.getGenerativeModel({ 
-            model: currentModelName 
-        });
+        let structuredData;
 
-        const generationConfig = {
-            responseMimeType: "application/json",
-            responseSchema: {
-                type: SchemaType.OBJECT,
-                properties: {
-                    summary: { type: SchemaType.STRING },
-                    riskLevel: { 
-                        type: SchemaType.STRING, 
-                        enum: ["Low", "Medium", "High"] 
-                    },
-                    markers: {
-                        type: SchemaType.ARRAY,
-                        items: { type: SchemaType.STRING }
-                    }
-                },
-                required: ["summary", "riskLevel", "markers"]
-            }
-        };
-
-        // Map files to the correct Multimodal format
-        const fileParts = currentCase.recordIds.map(record => {
-            if (!record.fileData) return null;
-            return {
-                inlineData: {
-                    data: record.fileData.toString("base64"),
-                    mimeType: record.contentType || "image/jpeg"
-                }
-            };
-        }).filter(part => part !== null);
-
-        const prompt = `
-            SYSTEM: Professional Clinical Assistant.
-            TASK: Analyze the attached medical reports/images. 
-            - Provide a concise 2-sentence clinical summary.
-            - Identify key medical markers (e.g., HbA1c, BP, Sugar levels).
-            - Assign a Risk Level based on clinical urgency.
-        `;
-
-        // Execution with built-in timeout safeguard
-        const result = await Promise.race([
-            model.generateContent({
-                contents: [{ role: "user", parts: [ { text: prompt }, ...fileParts ] }],
-                generationConfig
-            }),
-            new Promise((_, reject) => setTimeout(() => reject(new Error("AI_TIMEOUT")), 50000))
-        ]);
-
-        const response = await result.response;
-        const responseText = response.text();
+        // --- PHASE 1: MOCK MODE ---
+        if (USE_MOCK_AI) {
+            console.log("🧪 MOCK ENABLED: Skipping Azure call.");
+            structuredData = getMockResponse();
+        } 
         
-        // Parse results (ResponseSchema ensures this is valid JSON)
-        const structuredData = JSON.parse(responseText);
+        // --- PHASE 2: AZURE PRODUCTION ---
+        else if (azureClient) {
+            console.log(`🟦 AZURE AI: Processing images for Case ${caseId}...`);
+            
+            const fileMessages = currentCase.recordIds.map(record => ({
+                type: "image_url",
+                image_url: { 
+                    url: `data:${record.contentType || 'image/jpeg'};base64,${record.fileData.toString("base64")}` 
+                }
+            }));
 
-        // Update Case with Analysis
-        const normalizedRisk = structuredData.riskLevel || 'Low';
-        const isHighPriority = normalizedRisk === 'High';
+            const response = await azureClient.chat.completions.create({
+                messages: [
+                    { 
+                        role: "system", 
+                        content: "You are a professional medical assistant. Analyze reports and return ONLY JSON: { \"summary\": \"string\", \"riskLevel\": \"Low/Medium/High\", \"markers\": [\"string\"] }" 
+                    },
+                    { 
+                        role: "user", 
+                        content: [
+                            { type: "text", text: "Analyze these reports:" },
+                            ...fileMessages
+                        ] 
+                    }
+                ],
+                response_format: { type: "json_object" },
+                timeout: 30000 // 30-second timeout to prevent infinite hanging
+            });
 
+            structuredData = JSON.parse(response.choices[0].message.content);
+        } else {
+            throw new Error("Azure Client not initialized (check ENV variables).");
+        }
+
+        // --- SUCCESS PATH: Update with AI findings ---
         await ReviewCase.findByIdAndUpdate(caseId, {
             aiAnalysis: {
                 summary: structuredData.summary,
-                riskLevel: normalizedRisk,
-                extractedMarkers: structuredData.markers || [],
+                riskLevel: structuredData.riskLevel,
+                extractedMarkers: structuredData.markers,
                 analyzedAt: new Date(),
-                modelVersion: currentModelName
+                modelVersion: "azure-gpt-4o"
             },
             status: 'PENDING_DOCTOR',
-            priority: isHighPriority ? 'High' : 'Normal'
+            priority: structuredData.riskLevel === 'High' ? 'High' : 'Normal'
         });
 
-        console.log(`✅ AI Analysis Successful: Case ${caseId}`);
-        await caseController.notifyDoctorCaseReady(caseId);
+        console.log(`✅ AI Success: Case ${caseId} pushed to doctor.`);
 
     } catch (error) {
-        console.error(`❌ AI Error on ${currentModelName}:`, error.message);
-
-        // Fallback Logic: Try next model if available
-        if (attempt < MODELS.length - 1) {
-            console.log(`🔄 Fallback triggered: Switching to ${MODELS[attempt + 1]}...`);
-            return exports.analyzeReports(caseId, attempt + 1);
-        }
-
-        // Final Graceful Degradation: Move to manual review
-        console.error("🔥 All AI attempts exhausted. Moving to manual specialist review.");
+        // --- FAIL-SAFE PATH: Don't stop the flow! ---
+        console.error(`⚠️ AI FAILURE for Case ${caseId}:`, error.message);
+        
         await ReviewCase.findByIdAndUpdate(caseId, {
-            status: 'PENDING_DOCTOR',
-            aiAnalysis: {
-                summary: 'AI analysis encountered a technical error. Specialist manual review is required.',
-                riskLevel: 'Medium',
+            status: 'PENDING_DOCTOR', // Still move it to the doctor's queue
+            priority: 'Normal',       // Default to normal since we don't know the risk
+            aiAnalysis: { 
+                summary: "Manual clinical review required (AI processing unavailable).", 
+                riskLevel: "Medium", // Neutral middle ground
+                extractedMarkers: [],
                 analyzedAt: new Date(),
-                error: error.message
+                modelVersion: "error-fallback"
             }
         });
 
-        await caseController.notifyDoctorCaseReady(caseId);
+        console.log(`📢 Fallback: Case ${caseId} submitted to doctor WITHOUT AI summary.`);
+    } finally {
+        // --- FINAL STEP: Always notify the doctor, regardless of success or failure ---
+        try {
+            await caseController.notifyDoctorCaseReady(caseId);
+        } catch (notifyErr) {
+            console.error("❌ Notification System Error:", notifyErr.message);
+        }
     }
 };
