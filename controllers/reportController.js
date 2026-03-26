@@ -11,11 +11,10 @@ exports.getAIAnalysisPDF = async (req, res) => {
 
         if (!caseData) return res.status(404).json({ success: false, message: 'Case not found.' });
 
-        // Use standard margins so text doesn't hit the edges
         const doc = new PDFDocument({ size: 'LETTER', margin: 50 }); 
 
         res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', `inline; filename=AI_Analysis_${caseId}.pdf`);
+        res.setHeader('Content-Disposition', `attachment; filename=PramanAI_AI_Report_${caseId.slice(-6)}.pdf`);
         doc.pipe(res);
 
         // --- 1. HEADER BANNER ---
@@ -26,32 +25,37 @@ exports.getAIAnalysisPDF = async (req, res) => {
         // --- 2. CASE INFO STRIP ---
         doc.rect(0, 100, 612, 35).fill('#1E7D75');
         doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(9).text(`CASE ID: ${caseId.toUpperCase()}`, 50, 112);
-        doc.text(`GENERATED: ${new Date().toLocaleDateString()}`, 420, 112, { align: 'right', width: 142 });
+        // Use a fixed X coordinate for the date to avoid layout shifts
+        doc.text(`GENERATED: ${new Date().toLocaleDateString()}`, 400, 112, { align: 'right', width: 162 });
 
-        // Move cursor to start of content
-        doc.y = 160;
-
-        // --- 3. RISK ASSESSMENT BADGE ---
+        // --- 3. RISK ASSESSMENT SECTION ---
+        // Explicitly set the Y coordinate after the header
+        let currentY = 160;
         const risk = (caseData.aiAnalysis?.riskLevel || 'Low').toUpperCase();
         const riskColor = risk === 'HIGH' ? '#E11D48' : (risk === 'MEDIUM' ? '#F59E0B' : '#1E7D75');
         
-        doc.fillColor('#64748B').font('Helvetica-Bold').fontSize(10).text('RISK STATUS:');
-        doc.fillColor(riskColor).fontSize(14).text(risk);
+        doc.fillColor('#64748B').font('Helvetica-Bold').fontSize(10).text('RISK STATUS:', 50, currentY);
+        doc.fillColor(riskColor).fontSize(14).text(risk, 50, currentY + 15);
         
-        doc.moveDown(1);
-        doc.moveTo(50, doc.y).lineTo(562, doc.y).strokeColor('#E2E8F0').lineWidth(1).stroke();
-        doc.moveDown(1.5);
-
+        currentY += 45;
+        // Horizontal Divider
+        doc.moveTo(50, currentY).lineTo(562, currentY).strokeColor('#E2E8F0').lineWidth(1).stroke();
+        
         // --- 4. EXECUTIVE SUMMARY ---
-        doc.fillColor('#1E7D75').font('Helvetica-Bold').fontSize(16).text('AI Executive Summary');
-        doc.moveDown(0.8);
+        currentY += 30;
+        doc.fillColor('#1E7D75').font('Helvetica-Bold').fontSize(16).text('AI Executive Summary', 50, currentY);
+        
+        currentY += 25;
+        const summaryText = caseData.aiAnalysis?.summary || "Automated analysis is being finalized. Please review the clinical records manually in the interim.";
         
         doc.fillColor('#334155').font('Helvetica').fontSize(11).text(
-            caseData.aiAnalysis?.summary || "Clinical analysis is currently processing. Please check back shortly.", 
+            summaryText, 
+            50, // X position back to left margin
+            currentY, 
             { width: 512, align: 'justify', lineGap: 5 }
         );
 
-        // --- 5. FOOTER ---
+        // --- 5. FOOTER (Fixed at bottom) ---
         const footerY = 730;
         doc.moveTo(50, footerY).lineTo(562, footerY).strokeColor('#E2E8F0').lineWidth(1).stroke();
         doc.fontSize(8).fillColor('#94A3B8').text(
