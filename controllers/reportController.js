@@ -17,19 +17,16 @@ exports.getAIAnalysisPDF = async (req, res) => {
         res.setHeader('Content-Disposition', `attachment; filename=PramanAI_AI_Report_${caseId.slice(-6)}.pdf`);
         doc.pipe(res);
 
-        // --- 1. HEADER BANNER ---
+        // --- 1. HEADER & CASE INFO ---
         doc.rect(0, 0, 612, 100).fill('#F0F9F8'); 
         doc.fillColor('#1E7D75').font('Helvetica-Bold').fontSize(24).text('Praman AI', 50, 35);
         doc.fillColor('#64748B').font('Helvetica').fontSize(10).text('PRELIMINARY CLINICAL CONTEXT', 50, 65);
         
-        // --- 2. CASE INFO STRIP ---
         doc.rect(0, 100, 612, 35).fill('#1E7D75');
         doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(9).text(`CASE ID: ${caseId.toUpperCase()}`, 50, 112);
-        // Use a fixed X coordinate for the date to avoid layout shifts
         doc.text(`GENERATED: ${new Date().toLocaleDateString()}`, 400, 112, { align: 'right', width: 162 });
 
-        // --- 3. RISK ASSESSMENT SECTION ---
-        // Explicitly set the Y coordinate after the header
+        // --- 2. RISK STATUS ---
         let currentY = 160;
         const risk = (caseData.aiAnalysis?.riskLevel || 'Low').toUpperCase();
         const riskColor = risk === 'HIGH' ? '#E11D48' : (risk === 'MEDIUM' ? '#F59E0B' : '#1E7D75');
@@ -38,34 +35,57 @@ exports.getAIAnalysisPDF = async (req, res) => {
         doc.fillColor(riskColor).fontSize(14).text(risk, 50, currentY + 15);
         
         currentY += 45;
-        // Horizontal Divider
         doc.moveTo(50, currentY).lineTo(562, currentY).strokeColor('#E2E8F0').lineWidth(1).stroke();
         
-        // --- 4. EXECUTIVE SUMMARY ---
+        // --- 3. EXECUTIVE SUMMARY ---
         currentY += 30;
         doc.fillColor('#1E7D75').font('Helvetica-Bold').fontSize(16).text('AI Executive Summary', 50, currentY);
         
         currentY += 25;
-        const summaryText = caseData.aiAnalysis?.summary || "Automated analysis is being finalized. Please review the clinical records manually in the interim.";
-        
         doc.fillColor('#334155').font('Helvetica').fontSize(11).text(
-            summaryText, 
-            50, // X position back to left margin
-            currentY, 
-            { width: 512, align: 'justify', lineGap: 5 }
+            caseData.aiAnalysis?.summary || "Automated analysis pending.", 
+            50, currentY, { width: 512, align: 'justify', lineGap: 5 }
         );
 
-        // --- 5. FOOTER (Fixed at bottom) ---
+        // --- 4. COLOR-CODED LAB MARKERS ---
+        // Get the dynamic Y position after the summary finishes
+        currentY = doc.y + 35; 
+
+        if (caseData.aiAnalysis?.extractedMarkers?.length > 0) {
+            doc.fillColor('#1E7D75').font('Helvetica-Bold').fontSize(14).text('Key Laboratory Markers', 50, currentY);
+            currentY += 22;
+
+            caseData.aiAnalysis.extractedMarkers.forEach((marker) => {
+                // Determine color based on content
+                let itemColor = '#334155'; // Default Slate
+                if (marker.includes('(High)') || marker.includes('(Abnormal)')) {
+                    itemColor = '#E11D48'; // Medical Red
+                } else if (marker.includes('(Low)')) {
+                    itemColor = '#D97706'; // Dark Orange/Gold
+                }
+
+                doc.fillColor(itemColor).font('Helvetica').fontSize(10).text(`• ${marker}`, 60, currentY);
+                currentY += 18;
+
+                // Handle basic page overflow if list is extremely long
+                if (currentY > 700) {
+                    doc.addPage();
+                    currentY = 50;
+                }
+            });
+        }
+
+        // --- 5. FOOTER ---
         const footerY = 730;
         doc.moveTo(50, footerY).lineTo(562, footerY).strokeColor('#E2E8F0').lineWidth(1).stroke();
         doc.fontSize(8).fillColor('#94A3B8').text(
             'IMPORTANT: This document is an automated preliminary analysis designed to assist clinical review. It does not constitute a final diagnosis or medical prescription.',
-            50, footerY + 15, { width: 512, align: 'center', lineGap: 2 }
+            50, footerY + 15, { width: 512, align: 'center' }
         );
 
         doc.end();
     } catch (err) {
-        console.error(err);
+        console.error("PDF Generation Error:", err);
         res.status(500).send('Error generating AI PDF');
     }
 };
