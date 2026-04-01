@@ -12,7 +12,8 @@ module.exports = async (mobile, otp) => {
     }
 
     // 2. Format: Remove '+', spaces, or dashes from phone
-    const cleanMobile = mobile.replace(/\D/g, ''); 
+    const cleanMobile = mobile.startsWith('91') ? mobile.replace(/\D/g, '') : `91${mobile.replace(/\D/g, '')}`;
+    //const cleanMobile = mobile.replace(/\D/g, ''); 
     // 3. Extract only numbers from OTP (in case a string was passed)
     const numericOtp = Number(otp.toString().replace(/\D/g, ''));
 
@@ -25,6 +26,10 @@ module.exports = async (mobile, otp) => {
                 otp: numericOtp,
             }
         });
+        console.log("--- MSG91 DEBUG START ---");
+console.log("Status:", response.status);
+console.log("Data:", response.data); // This will show if it's "Missing Template" or "Invalid Mobile"
+console.log("--- MSG91 DEBUG END ---");
 
         // 4. Validate MSG91 Internal Response (they return 200 even on failures)
         if (response.data.type === 'error') {
