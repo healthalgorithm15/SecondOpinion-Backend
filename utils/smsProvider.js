@@ -16,12 +16,12 @@ module.exports = async (mobile, otp) => {
         template_id: process.env.MSG91_TEMPLATE_ID,
         mobile: cleanMobile,
         authkey: process.env.MSG91_AUTH_KEY,
-        otp: otp,
+        otp: Number(otp),
         // Optional: add extra variables if your template uses them
         // real_otp: otp 
       }
     });
-
+console.log("✅ SMS sent successfully");
     // 3. MSG91 returns 200 even if it fails internally, check the response type
     if (response.data.type === 'error') {
       throw new Error(`MSG91 Error: ${response.data.message}`);
