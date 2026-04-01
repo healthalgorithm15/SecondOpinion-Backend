@@ -10,7 +10,9 @@ const requiredEnvs = [
     'APP_URL',
     'RAZORPAY_KEY_ID',       // 🟢 ADDED: Required for Payment initialization
     'RAZORPAY_KEY_SECRET',   // 🟢 ADDED: Required for Payment verification
-    'RAZORPAY_WEBHOOK_SECRET'// 🟢 ADDED: Required for Webhook security
+    'RAZORPAY_WEBHOOK_SECRET',// 🟢 ADDED: Required for Webhook security
+    'MSG91_AUTH_KEY',     // 🆕 ADDED
+    'MSG91_TEMPLATE_ID',
 ];
 
 // AI-specific requirements
@@ -70,7 +72,16 @@ const config = {
         pass: process.env.EMAIL_PASS,
         host: process.env.SMTP_HOST || 'smtp.gmail.com',
         port: parseInt(process.env.SMTP_PORT, 10) || 587,
-    }
+         fromName: process.env.EMAIL_FROM_NAME || 'PramanAI'
+    },
+
+
+    sms: {
+        authKey: process.env.MSG91_AUTH_KEY,
+        templateId: process.env.MSG91_TEMPLATE_ID,
+    },
+
+   
 };
 
 module.exports = config;
