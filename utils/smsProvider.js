@@ -1,8 +1,23 @@
 const axios = require('axios');
 
 /**
- * 📱 MSG91 OTP Provider
- * Sends raw numeric OTP to MSG91 API v5
+ * 📱 Mobile Number Sanitizer for MSG91
+ */
+const sanitizeMobile = (mobile) => {
+    let cleaned = mobile.replace(/\D/g, '');
+    if (cleaned.length === 10) {
+        cleaned = `91${cleaned}`;
+    }
+    if (cleaned.startsWith('00')) {
+        cleaned = cleaned.substring(2);
+    } else if (cleaned.startsWith('0')) {
+        cleaned = cleaned.substring(1);
+    }
+    return cleaned;
+};
+
+/**
+ * 🚀 Main SMS Provider
  */
 module.exports = async (mobile, otp) => {
     // 1. Dev Mode / Environment Check
@@ -11,37 +26,36 @@ module.exports = async (mobile, otp) => {
         return true; 
     }
 
-    // 2. Format: Remove '+', spaces, or dashes from phone
-    const cleanMobile = mobile.startsWith('91') ? mobile.replace(/\D/g, '') : `91${mobile.replace(/\D/g, '')}`;
-    //const cleanMobile = mobile.replace(/\D/g, ''); 
-    // 3. Extract only numbers from OTP (in case a string was passed)
+    const finalMobile = sanitizeMobile(mobile);
     const numericOtp = Number(otp.toString().replace(/\D/g, ''));
+
+    console.log(`\n📤 Attempting SMS to: ${finalMobile}`);
 
     try {
         const response = await axios.post('https://control.msg91.com/api/v5/otp', null, {
             params: {
                 template_id: process.env.MSG91_TEMPLATE_ID,
-                mobile: cleanMobile,
+                mobile: finalMobile,
                 authkey: process.env.MSG91_AUTH_KEY,
                 otp: numericOtp,
             }
         });
-        console.log("--- MSG91 DEBUG START ---");
-console.log("Status:", response.status);
-console.log("Data:", response.data); // This will show if it's "Missing Template" or "Invalid Mobile"
-console.log("--- MSG91 DEBUG END ---");
 
-        // 4. Validate MSG91 Internal Response (they return 200 even on failures)
+        console.log("--- MSG91 DEBUG ---");
+        console.log("Status:", response.status);
+        console.log("Response:", response.data);
+        console.log("-------------------");
+
         if (response.data.type === 'error') {
             throw new Error(response.data.message || 'MSG91 Validation Failed');
         }
 
-        console.log(`✅ SMS sent successfully to ${cleanMobile}`);
+        console.log(`✅ SMS sent successfully to ${finalMobile}`);
         return true;
 
     } catch (error) {
         const detailedError = error.response?.data?.message || error.message;
         console.error('❌ SMS Delivery Failed:', detailedError);
-        throw new Error(`SMS service temporarily unavailable: ${detailedError}`);
+        throw new Error(`SMS service unavailable: ${detailedError}`);
     }
 };
