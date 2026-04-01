@@ -5,31 +5,29 @@ const sendEmail = require('../utils/emailProvider');
 
 // 1. REGISTER NEW USER (Admin/Patient/Doctor)
 exports.register = async (req, res) => {
-    console.log("BODY ARRIVED AT CONTROLLER:", req.body);
     try {
         const { user, otp, emailToken } = await authService.registerUser(req.body);
-
         const host = process.env.APP_URL || 'http://localhost:5000';
 
-        // Send OTP via SMS
+        // 1. Send OTP via SMS (Direct numeric pass)
         if (otp && user.mobile) {
-            sendSMS(user.mobile, `Your verification code is: ${otp}`)
-                .catch(err => console.error("SMS Send Error:", err.message));
+            sendSMS(user.mobile, otp)
+                .catch(err => console.error("Registration SMS Error:", err.message));
         }
 
-        // Send Verification Email
+        // 2. Send Verification Email
         if (emailToken && user.email) {
             const url = `${host}/api/auth/verify-email/${emailToken}`;
             sendEmail({ 
                 email: user.email, 
-                subject: 'Verify Your Health Account', 
-                message: `<p>Please click <a href="${url}">here</a> to verify.</p>` 
-            }).catch(err => console.error("Email Send Error:", err.message));
+                subject: 'Verify Your PramanAI Account', 
+                message: `<p>Please click <a href="${url}">here</a> to verify your medical account.</p>` 
+            }).catch(err => console.error("Registration Email Error:", err.message));
         }
         
         res.status(201).json({ 
             success: true, 
-            message: otp ? 'OTP sent to your mobile.' : 'Verification link sent to your email.',
+            message: otp ? 'OTP sent to mobile.' : 'Verification link sent to email.',
             debug: process.env.NODE_ENV === 'development' ? { otp, emailToken } : undefined
         });
 
