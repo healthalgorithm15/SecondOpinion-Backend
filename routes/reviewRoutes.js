@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const Review = require('../models/Review');
+const Review = require('../models/PatientReview');
 
 // @route   POST /api/reviews/submit
 // @desc    Submit a new review (starts as 'pending')
