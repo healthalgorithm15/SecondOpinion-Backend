@@ -2,6 +2,7 @@ const User = require('../models/User');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const { OAuth2Client } = require('google-auth-library');
+
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 /**
@@ -10,23 +11,27 @@ const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const hashToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
 
 /**
- * Professional Registration Logic
+ * 1. Professional Registration Logic
  */
 exports.registerUser = async (userData) => {
     let { name, email, mobile, password, identifier, role } = userData;
 
-    // SANITIZATION: Prevents "duplicate key error" for empty fields
-    if (mobile === "" || (typeof mobile === 'string' && mobile.trim() === "")) mobile = undefined;
-    if (email === "" || (typeof email === 'string' && email.trim() === "")) email = email?.toLowerCase().trim();
+    // SANITIZATION: Ensure empty strings don't trigger unique index collisions
+    email = (email && email.trim() !== "") ? email.toLowerCase().trim() : undefined;
+    mobile = (mobile && mobile.trim() !== "") ? mobile.trim() : undefined;
 
-    // Identifier Logic if fields are missing
+    // Auto-detect identifier type if specific fields are missing
     if (identifier && !email && !mobile) {
-        if (identifier.includes('@')) { email = identifier.toLowerCase().trim(); } 
-        else { mobile = identifier.trim(); }
+        if (identifier.includes('@')) { 
+            email = identifier.toLowerCase().trim(); 
+        } else { 
+            mobile = identifier.trim(); 
+        }
     }
 
-    if (!email && !mobile) throw new Error('Email or Mobile required');
+    if (!email && !mobile) throw new Error('Email or Mobile number is required');
 
+    // Check for existing users
     const criteria = [];
     if (email) criteria.push({ email });
     if (mobile) criteria.push({ mobile });
@@ -37,7 +42,7 @@ exports.registerUser = async (userData) => {
         throw new Error(`${field} is already registered to another account`);
     }
 
-    // MFA Selection during signup
+    // Generate Verification Data
     let otp = undefined;
     let otpExpire = undefined;
     let emailToken = undefined;
@@ -49,8 +54,7 @@ exports.registerUser = async (userData) => {
         emailToken = crypto.randomBytes(32).toString('hex');
     }
 
-    // 🛡️ PROD FIX: Send PLAIN text password. 
-    // Your User Model will hash it once in the pre('save') hook.
+    // Create User (Model's pre-save hook handles the hashing)
     const user = await User.create({
         name,
         email,
@@ -68,30 +72,25 @@ exports.registerUser = async (userData) => {
 };
 
 /**
- * Login: Standard MFA Flow
+ * 2. Login Logic
  */
 exports.loginUser = async (identifier, password) => {
-    // Normalize identifier for search
-    const cleanId = identifier.toLowerCase().trim();
+    const cleanId = identifier.trim();
+    const searchId = cleanId.toLowerCase();
 
-    // 1. Find user and explicitly include password (since it's select: false in Model)
+    // Find user and include hidden password
     const user = await User.findOne({
-        $or: [{ email: cleanId }, { mobile: identifier.trim() }]
+        $or: [{ email: searchId }, { mobile: cleanId }]
     }).select('+password');
 
-    console.log("Attempting login for:", cleanId);
-    console.log("User found in DB:", user ? "YES" : "NO");
-
-    // 2. Use the Model's helper method or direct bcrypt comparison
     if (!user || !(await bcrypt.compare(password, user.password))) {
         throw new Error('Invalid credentials');
     }
 
-    // 3. Generate login OTP
+    // Generate Login OTP
     const otp = crypto.randomInt(100000, 999999).toString();
     
-    // 🛡️ PROD FIX: Use findByIdAndUpdate to update OTP.
-    // This prevents the pre('save') hook from accidentally re-hashing the password.
+    // 🛡️ Bypasses pre-save hooks to prevent password re-hashing
     await User.findByIdAndUpdate(user._id, {
         otp,
         otpExpire: Date.now() + 10 * 60 * 1000
@@ -101,30 +100,30 @@ exports.loginUser = async (identifier, password) => {
 };
 
 /**
- * Verify OTP
+ * 3. Unified OTP Verification
  */
 exports.verifyOTP = async (identifier, otp, mode = 'login') => {
+    const cleanId = identifier.trim();
+    const searchId = cleanId.toLowerCase();
     let user;
-    const cleanId = identifier.toLowerCase().trim();
 
     if (mode === 'reset') {
         user = await User.findOne({
-            $or: [{ email: cleanId }, { mobile: identifier.trim() }],
+            $or: [{ email: searchId }, { mobile: cleanId }],
             passwordResetOtp: otp,
             passwordResetExpires: { $gt: Date.now() }
         });
         if (!user) throw new Error("Invalid or expired reset code");
     } else {
-        // Explicitly select otp fields since they are select: false in schema
         user = await User.findOne({ 
-            $or: [{ email: cleanId }, { mobile: identifier.trim() }] 
+            $or: [{ email: searchId }, { mobile: cleanId }] 
         }).select('+otp +otpExpire');
 
         if (!user || user.otp !== otp || user.otpExpire < Date.now()) {
             throw new Error('Invalid or expired OTP');
         }
 
-        // Use findByIdAndUpdate to activate without triggering password middleware
+        // Clear OTP and verify user using findByIdAndUpdate
         user = await User.findByIdAndUpdate(user._id, {
             isVerified: true,
             isEmailVerified: !!user.email,
@@ -137,10 +136,11 @@ exports.verifyOTP = async (identifier, otp, mode = 'login') => {
 };
 
 /**
- * Reset Password Logic
+ * 4. Reset Password
  */
 exports.resetPassword = async (identifier, otp, newPassword) => {
-    const cleanId = identifier.toLowerCase().trim();
+    const cleanId = identifier.trim().toLowerCase();
+    
     const user = await User.findOne({
         $or: [{ email: cleanId }, { mobile: identifier.trim() }],
         passwordResetOtp: otp,
@@ -149,8 +149,7 @@ exports.resetPassword = async (identifier, otp, newPassword) => {
 
     if (!user) throw new Error("Reset session expired. Please request a new code.");
 
-    // 🛡️ PROD FIX: Set plain text. 
-    // The .save() call will trigger the Model's pre-save hash hook.
+    // This triggers the .save() hook which is correct for password changes
     user.password = newPassword; 
     user.passwordResetOtp = undefined;
     user.passwordResetExpires = undefined;
@@ -159,19 +158,22 @@ exports.resetPassword = async (identifier, otp, newPassword) => {
     return user;
 };
 
-
 /**
- * Google Auth Logic
+ * 5. Google Auth
  */
 exports.googleAuth = async (idToken) => {
     const ticket = await client.verifyIdToken({ idToken, audience: process.env.GOOGLE_CLIENT_ID });
     const { name, email, sub: googleId } = ticket.getPayload();
 
-    let user = await User.findOne({ $or: [{ googleId }, { email }] });
+    let user = await User.findOne({ $or: [{ googleId }, { email: email.toLowerCase() }] });
+    
     if (!user) {
         user = await User.create({
-            name, email, googleId,
-            authMethod: 'google', isEmailVerified: true,
+            name, 
+            email: email.toLowerCase(), 
+            googleId,
+            authMethod: 'google', 
+            isEmailVerified: true,
             isVerified: true, 
             consent: { hasAgreed: true, agreedAt: Date.now() }
         });
@@ -180,7 +182,7 @@ exports.googleAuth = async (idToken) => {
 };
 
 /**
- * Verify Email Link (for Email-based registration)
+ * 6. Verify Email Link
  */
 exports.verifyEmailToken = async (token) => {
     const hashedToken = hashToken(token);
@@ -197,10 +199,10 @@ exports.verifyEmailToken = async (token) => {
 };
 
 /**
- * Get User Profile
+ * 7. Get User Profile
  */
 exports.getUserProfile = async (userId) => {
-    const user = await User.findById(userId).select('-password'); // Never return the password
+    const user = await User.findById(userId).select('-password');
     if (!user) throw new Error('User not found');
     return user;
 };

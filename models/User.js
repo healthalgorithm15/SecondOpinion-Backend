@@ -52,7 +52,7 @@ const userSchema = new mongoose.Schema({
     mciNumber: { type: String, unique: true, sparse: true },
     experienceYears: { type: Number },
 
-    // Security Tokens (Hidden by default)
+    // Security Tokens (Hidden from standard queries by default)
     otp: { type: String, select: false },
     otpExpire: { type: Date, select: false },
     emailToken: { type: String, select: false },
@@ -74,23 +74,37 @@ const userSchema = new mongoose.Schema({
     timestamps: true 
 });
 
-// 🛡️ MODERN ENCRYPTION MIDDLEWARE
-userSchema.pre('save', async function () {
-    if (!this.isModified('password')) return;
+/**
+ * 🛡️ ENCRYPTION MIDDLEWARE
+ * Hashes the password before saving if it has been modified.
+ * Note: Use 'next' to ensure the async chain completes correctly.
+ */
+userSchema.pre('save', async function (next) {
+    if (!this.isModified('password')) return next();
+    
     try {
-        const salt = await bcrypt.genSalt(10);
+        const salt = await bcrypt.genSalt(12); // Slightly stronger salt for production
         this.password = await bcrypt.hash(this.password, salt);
+        next();
     } catch (error) {
-        throw new Error(error);
+        next(error);
     }
 });
 
-// 🔑 HELPER METHOD
+/**
+ * 🔑 HELPER METHOD
+ * Compares plain text password with hashed password in DB
+ */
 userSchema.methods.comparePassword = async function (enteredPassword) {
     return await bcrypt.compare(enteredPassword, this.password);
 };
 
-// ⚡ INDEXING
-userSchema.index({ email: 1, mobile: 1 });
+/**
+ * ⚡ INDEXING
+ * Using separate indexes for Email and Mobile is more efficient for $or queries.
+ */
+userSchema.index({ email: 1 });
+userSchema.index({ mobile: 1 });
+userSchema.index({ mciNumber: 1 }); // Important for doctor verification searches
 
 module.exports = mongoose.model('User', userSchema);

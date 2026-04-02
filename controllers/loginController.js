@@ -10,11 +10,10 @@ const { generateToken } = require('../utils/tokenHelper');
 exports.login = async (req, res) => {
     try {
         const { identifier, password } = req.body;
-        console.log("inside login", req.body);
+        console.log("Login attempt for:", identifier);
         
         // Authenticate via service
         const { user, otp } = await authService.loginUser(identifier, password);
-        console.log("inside login controller", user, otp)
         
         // 🛑 SECURITY CHECK: Block if account is not verified (Email users)
         if (user.email && !user.isEmailVerified) {
@@ -24,16 +23,12 @@ exports.login = async (req, res) => {
             });
         }
 
-        // 🟢 PRODUCTION-READY NOTIFICATION BLOCK
-        // We wrap these in a secondary try/catch so provider failures 
-        // don't prevent the user from reaching the OTP screen.
+        // 🟢 NOTIFICATION BLOCK: Provider failures won't block the response
         try {
-            // Send OTP via Mobile
             if (user.mobile) {
-                await sendSMS(user.mobile, `Your login code is: ${otp}`);
+                await sendSMS(user.mobile, `Your PramanAI login code is: ${otp}`);
             }
 
-            // Send OTP via Email
             if (user.email) {
                 await sendEmail({
                     email: user.email,
@@ -42,25 +37,24 @@ exports.login = async (req, res) => {
                 });
             }
         } catch (providerError) {
-            // Log the specific provider error (like the 535 SMTP error)
             console.error("Notification Delivery Failed:", providerError.message);
-            // We continue anyway so the user can use the code shown in the terminal
+            // We continue so the user can still proceed (useful for local dev/testing)
         }
 
-        // Always return 200 if the password/user was valid
         res.status(200).json({ 
             success: true, 
             message: 'OTP sent to your registered device' 
         });
 
     } catch (err) { 
-        console.log("inside login controller error,", err.message)
+        console.error("Login Controller Error:", err.message);
+        // This ensures "Invalid credentials" or other service errors reach the app
         res.status(401).json({ success: false, message: err.message }); 
     }
 };
 
 /**
- * 2. Unified OTP Verification (Remains Exactly as Provided)
+ * 2. Unified OTP Verification
  */
 exports.verifyOTP = async (req, res) => {
     try {
@@ -93,7 +87,7 @@ exports.verifyOTP = async (req, res) => {
 };
 
 /**
- * 3. Google OAuth Login (Remains Exactly as Provided)
+ * 3. Google OAuth Login
  */
 exports.googleLogin = async (req, res) => {
     try {
@@ -118,6 +112,25 @@ exports.googleLogin = async (req, res) => {
 
 /**
  * 4. Get Current User Profile
- * This allows the Settings page to show real email/name
  */
-
+exports.getProfile = async (req, res) => {
+    try {
+        // req.user._id comes from your protect/auth middleware
+        const user = await authService.getUserProfile(req.user._id);
+        
+        res.status(200).json({
+            success: true,
+            user: {
+                _id: user._id,
+                name: user.name,
+                email: user.email,
+                mobile: user.mobile,
+                role: user.role,
+                isEmailVerified: user.isEmailVerified,
+                isProfileApproved: user.isProfileApproved
+            }
+        });
+    } catch (err) {
+        res.status(404).json({ success: false, message: err.message });
+    }
+};
