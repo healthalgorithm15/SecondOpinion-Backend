@@ -27,7 +27,7 @@ router.post('/submit', async (req, res) => {
 // @desc    Get all reviews with 'approved' status
 router.get('/approved', async (req, res) => {
   try {
-    const reviews = await Review.find({ status: 'approved' }).sort({ createdAt: -1 });
+    const reviews = await Review.find();
     res.json(reviews);
   } catch (err) {
     res.status(500).json({ success: false, message: "Server Error" });
