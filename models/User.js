@@ -9,14 +9,14 @@ const userSchema = new mongoose.Schema({
     },
     email: { 
         type: String, 
-        unique: true, 
-        sparse: true, 
+        unique: true, // 🟢 This automatically creates a unique index
+        sparse: true, // Allows multiple nulls (important if some users register with only mobile)
         lowercase: true, 
         trim: true 
     },
     mobile: { 
         type: String, 
-        unique: true, 
+        unique: true, // 🟢 Automatically creates a unique index
         sparse: true 
     },
     password: { 
@@ -49,10 +49,14 @@ const userSchema = new mongoose.Schema({
 
     // Doctor Specific Fields
     specialization: { type: String },
-    mciNumber: { type: String, unique: true, sparse: true },
+    mciNumber: { 
+        type: String, 
+        unique: true, // 🟢 Automatically creates a unique index
+        sparse: true 
+    },
     experienceYears: { type: Number },
 
-    // Security Tokens (Hidden from standard queries by default)
+    // Security Tokens
     otp: { type: String, select: false },
     otpExpire: { type: Date, select: false },
     emailToken: { type: String, select: false },
@@ -76,14 +80,12 @@ const userSchema = new mongoose.Schema({
 
 /**
  * 🛡️ ENCRYPTION MIDDLEWARE
- * Hashes the password before saving if it has been modified.
- * Note: Use 'next' to ensure the async chain completes correctly.
  */
 userSchema.pre('save', async function (next) {
     if (!this.isModified('password')) return next();
     
     try {
-        const salt = await bcrypt.genSalt(12); // Slightly stronger salt for production
+        const salt = await bcrypt.genSalt(12);
         this.password = await bcrypt.hash(this.password, salt);
         next();
     } catch (error) {
@@ -93,18 +95,13 @@ userSchema.pre('save', async function (next) {
 
 /**
  * 🔑 HELPER METHOD
- * Compares plain text password with hashed password in DB
  */
 userSchema.methods.comparePassword = async function (enteredPassword) {
     return await bcrypt.compare(enteredPassword, this.password);
 };
 
-/**
- * ⚡ INDEXING
- * Using separate indexes for Email and Mobile is more efficient for $or queries.
- */
-userSchema.index({ email: 1 });
-userSchema.index({ mobile: 1 });
-userSchema.index({ mciNumber: 1 }); // Important for doctor verification searches
+// ⚡ INDEXING NOTES:
+// Removed explicit .index() calls for email, mobile, and mciNumber.
+// Mongoose creates these automatically due to the 'unique: true' flag above.
 
 module.exports = mongoose.model('User', userSchema);
