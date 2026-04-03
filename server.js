@@ -77,12 +77,20 @@ io.on('connection', (socket) => {
     await User.findOneAndUpdate({ socketId: socket.id }, { socketId: null });
   });
 });
-/*app.use((err, req, res, next) => {
-  res.status(err.status || 500).json({
+app.use((err, req, res, next) => {
+  // Log the actual error to your terminal so you can see it!
+  console.error("🚨 Global Error Shield:", err.stack);
+
+  const statusCode = err.statusCode || err.status || 500;
+
+  res.status(statusCode).json({
     success: false,
-    message: err.message || "Internal Server Error"
+    // If it's a "next is not a function" error, this will now tell us
+    message: err.message || "Internal Server Error", 
+    // Only show the stack trace if you are in development mode
+    stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
   });
-});*/
+});
 const PORT = process.env.PORT || 8080; 
 
 server.listen(PORT, () => {

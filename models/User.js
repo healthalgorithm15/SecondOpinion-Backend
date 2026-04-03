@@ -81,15 +81,15 @@ const userSchema = new mongoose.Schema({
 /**
  * 🛡️ ENCRYPTION MIDDLEWARE
  */
-userSchema.pre('save', async function (next) {
-    if (!this.isModified('password')) return next();
+userSchema.pre('save', async function () { // Removed 'next' from arguments
+    if (!this.isModified('password')) return; // Just return, don't call next()
     
     try {
         const salt = await bcrypt.genSalt(12);
         this.password = await bcrypt.hash(this.password, salt);
-        next();
+        // No next() call needed here for async functions in newer Mongoose
     } catch (error) {
-        next(error);
+        throw error; // Just throw the error
     }
 });
 
