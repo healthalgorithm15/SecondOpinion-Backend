@@ -134,7 +134,35 @@ exports.verifyOTP = async (identifier, otp, mode = 'login') => {
 
     return user;
 };
+/**
+ * 4. Forgot Password Logic (ADDED)
+ */
+exports.forgotPassword = async (identifier) => {
+    const cleanId = identifier.trim().toLowerCase();
+    
+    // Find user by email or mobile
+    const user = await User.findOne({
+        $or: [{ email: cleanId }, { mobile: identifier.trim() }]
+    });
 
+    if (!user) throw new Error('No user found with this email or mobile number');
+
+    // Generate 6-digit OTP for Mobile
+    const resetOtp = crypto.randomInt(100000, 999999).toString();
+    
+    // Generate Token for Email Link
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const hashedResetToken = hashToken(resetToken);
+
+    // Save to User model
+    user.passwordResetOtp = resetOtp;
+    user.passwordResetToken = hashedResetToken;
+    user.passwordResetExpires = Date.now() + 15 * 60 * 1000; // 15 Minute Expiry
+
+    await user.save({ validateBeforeSave: false });
+
+    return { user, resetToken, resetOtp };
+};
 /**
  * 4. Reset Password
  */
