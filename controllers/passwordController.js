@@ -5,22 +5,31 @@ const sendEmail = require('../utils/emailProvider');
 exports.forgotPassword = async (req, res) => {
     try {
         const { identifier } = req.body;
-        const { user, resetToken, resetOtp } = await authService.forgotPassword(identifier);
+        const { user, resetOtp } = await authService.forgotPassword(identifier);
 
         const isEmailInput = identifier.includes('@');
 
+        // ✅ If it's an email, send the OTP (code) instead of a link
         if (isEmailInput && user.email) {
-            const resetUrl = `${req.protocol}://${req.get('host')}/api/auth/reset-password/${resetToken}`;
             await sendEmail({ 
                 email: user.email, 
-                subject: 'Reset Password', 
-                message: `<p>Link: ${resetUrl}</p>` 
+                subject: 'PramanAI: Password Reset Code', 
+                // We send the 6-digit OTP so the user can type it into the app
+                message: `
+                    <div style="font-family: sans-serif; padding: 20px;">
+                        <h2>Reset Your Password</h2>
+                        <p>Use the following code to reset your password in the PramanAI app:</p>
+                        <h1 style="color: #1E7D75; letter-spacing: 5px;">${resetOtp}</h1>
+                        <p>This code will expire in 15 minutes.</p>
+                    </div>
+                ` 
             });
-            return res.status(200).json({ success: true, message: 'Reset link sent to email' });
+            return res.status(200).json({ success: true, message: 'Reset code sent to email' });
         }
 
+        // ✅ If it's mobile, SMS already uses the resetOtp
         if (!isEmailInput && user.mobile) {
-            await sendSMS(user.mobile, `Reset code: ${resetOtp}`);
+            await sendSMS(user.mobile, `Your PramanAI reset code is: ${resetOtp}`);
             return res.status(200).json({ success: true, message: 'Reset code sent to mobile' });
         }
 

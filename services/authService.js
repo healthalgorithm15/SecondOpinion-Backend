@@ -108,13 +108,20 @@ exports.verifyOTP = async (identifier, otp, mode = 'login') => {
     let user;
 
     if (mode === 'reset') {
+        // 1. Find the user with the reset OTP
         user = await User.findOne({
             $or: [{ email: searchId }, { mobile: cleanId }],
             passwordResetOtp: otp,
             passwordResetExpires: { $gt: Date.now() }
         });
+        
         if (!user) throw new Error("Invalid or expired reset code");
+
+        // ✅ OPTIONAL: You can clear it now, or wait until resetPassword is called.
+        // I recommend waiting until resetPassword is called (which you already do).
+        
     } else {
+        // 2. Standard Login/Signup OTP
         user = await User.findOne({ 
             $or: [{ email: searchId }, { mobile: cleanId }] 
         }).select('+otp +otpExpire');
@@ -123,7 +130,6 @@ exports.verifyOTP = async (identifier, otp, mode = 'login') => {
             throw new Error('Invalid or expired OTP');
         }
 
-        // Clear OTP and verify user using findByIdAndUpdate
         user = await User.findByIdAndUpdate(user._id, {
             isVerified: true,
             isEmailVerified: !!user.email,
