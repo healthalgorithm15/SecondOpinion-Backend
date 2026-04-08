@@ -9,14 +9,14 @@ const userSchema = new mongoose.Schema({
     },
     email: { 
         type: String, 
-        unique: true, // 🟢 This automatically creates a unique index
-        sparse: true, // Allows multiple nulls (important if some users register with only mobile)
+        unique: true, 
+        sparse: true, 
         lowercase: true, 
         trim: true 
     },
     mobile: { 
         type: String, 
-        unique: true, // 🟢 Automatically creates a unique index
+        unique: true, 
         sparse: true 
     },
     password: { 
@@ -51,18 +51,28 @@ const userSchema = new mongoose.Schema({
     specialization: { type: String },
     mciNumber: { 
         type: String, 
-        unique: true, // 🟢 Automatically creates a unique index
+        unique: true, 
         sparse: true 
     },
     experienceYears: { type: Number },
 
-    // Security Tokens
+    // Security Tokens & Rate Limiting
     otp: { type: String, select: false },
     otpExpire: { type: Date, select: false },
     emailToken: { type: String, select: false },
     passwordResetToken: { type: String, select: false },
     passwordResetOtp: { type: String, select: false },
     passwordResetExpires: { type: Date, select: false },
+    
+    // 🛡️ PRODUCTION GUARD FIELDS
+    otpResendCount: { 
+        type: Number, 
+        default: 0 
+    },
+    lastOtpSentAt: { 
+        type: Date, 
+        default: null 
+    },
 
     // Compliance & Metadata
     consent: {
@@ -81,15 +91,14 @@ const userSchema = new mongoose.Schema({
 /**
  * 🛡️ ENCRYPTION MIDDLEWARE
  */
-userSchema.pre('save', async function () { // Removed 'next' from arguments
-    if (!this.isModified('password')) return; // Just return, don't call next()
+userSchema.pre('save', async function () {
+    if (!this.isModified('password')) return;
     
     try {
         const salt = await bcrypt.genSalt(12);
         this.password = await bcrypt.hash(this.password, salt);
-        // No next() call needed here for async functions in newer Mongoose
     } catch (error) {
-        throw error; // Just throw the error
+        throw error;
     }
 });
 
@@ -99,9 +108,5 @@ userSchema.pre('save', async function () { // Removed 'next' from arguments
 userSchema.methods.comparePassword = async function (enteredPassword) {
     return await bcrypt.compare(enteredPassword, this.password);
 };
-
-// ⚡ INDEXING NOTES:
-// Removed explicit .index() calls for email, mobile, and mciNumber.
-// Mongoose creates these automatically due to the 'unique: true' flag above.
 
 module.exports = mongoose.model('User', userSchema);

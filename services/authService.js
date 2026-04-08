@@ -141,36 +141,62 @@ exports.verifyOTP = async (identifier, otp, mode = 'login') => {
     return user;
 };
 /**
- * 4. Forgot Password Logic (ADDED)
+ * Helper: Check Cooldown and Attempt Limits
+ * This prevents OTP spamming and brute force attempts.
+ */
+const validateOtpRequest = (user) => {
+    const COOLDOWN_TIME = 60 * 1000; // 1 minute
+    const MAX_ATTEMPTS = 5;
+
+    // 1. Check Hard Attempt Limit
+    if (user.otpResendCount >= MAX_ATTEMPTS) {
+        throw new Error('Maximum OTP attempts reached. Please try again in 1 hour.');
+    }
+
+    // 2. Check Cooldown (Time passed since lastOtpSentAt)
+    if (user.lastOtpSentAt) {
+        const timePassed = Date.now() - new Date(user.lastOtpSentAt).getTime();
+        if (timePassed < COOLDOWN_TIME) {
+            const waitTime = Math.ceil((COOLDOWN_TIME - timePassed) / 1000);
+            throw new Error(`Please wait ${waitTime} seconds before requesting a new code.`);
+        }
+    }
+};
+
+/**
+ * 4. Forgot Password Logic (Updated with Rate Limiting)
  */
 exports.forgotPassword = async (identifier) => {
     const cleanId = identifier.trim().toLowerCase();
     
-    // Find user by email or mobile
     const user = await User.findOne({
         $or: [{ email: cleanId }, { mobile: identifier.trim() }]
     });
 
     if (!user) throw new Error('No user found with this email or mobile number');
 
-    // Generate 6-digit OTP for Mobile
+    // 🛡️ Validate Cooldown/Attempts
+    validateOtpRequest(user);
+
     const resetOtp = crypto.randomInt(100000, 999999).toString();
-    
-    // Generate Token for Email Link
     const resetToken = crypto.randomBytes(32).toString('hex');
-    const hashedResetToken = hashToken(resetToken);
 
     // Save to User model
     user.passwordResetOtp = resetOtp;
-    user.passwordResetToken = hashedResetToken;
-    user.passwordResetExpires = Date.now() + 15 * 60 * 1000; // 15 Minute Expiry
+    user.passwordResetToken = hashToken(resetToken);
+    user.passwordResetExpires = Date.now() + 10 * 60 * 1000; // 10 Minute Expiry (Standard)
+    
+    // 🛡️ Update Rate Limit Fields
+    user.lastOtpSentAt = Date.now();
+    user.otpResendCount += 1;
 
     await user.save({ validateBeforeSave: false });
 
     return { user, resetToken, resetOtp };
 };
 /**
- * 4. Reset Password
+ * Reset Password (Cleanup logic)
+ * When password is reset successfully, we should reset the resend count.
  */
 exports.resetPassword = async (identifier, otp, newPassword) => {
     const cleanId = identifier.trim().toLowerCase();
@@ -183,13 +209,46 @@ exports.resetPassword = async (identifier, otp, newPassword) => {
 
     if (!user) throw new Error("Reset session expired. Please request a new code.");
 
-    // This triggers the .save() hook which is correct for password changes
     user.password = newPassword; 
     user.passwordResetOtp = undefined;
     user.passwordResetExpires = undefined;
+    
+    // 🛡️ Reset the counter so they aren't blocked next time they forget
+    user.otpResendCount = 0;
+    user.lastOtpSentAt = null;
 
     await user.save();
     return user;
+};
+
+/**
+ * Resend OTP Logic (Updated with Rate Limiting)
+ */
+exports.resendOTP = async (identifier) => {
+    const cleanId = identifier.trim().toLowerCase();
+    
+    const user = await User.findOne({
+        $or: [{ email: cleanId }, { mobile: identifier.trim() }]
+    });
+
+    if (!user) throw new Error('No user found with this identifier');
+
+    // 🛡️ Validate Cooldown/Attempts
+    validateOtpRequest(user);
+
+    const newOtp = crypto.randomInt(100000, 999999).toString();
+    
+    // Standardize to 10-minute expiry for consistency
+    user.passwordResetOtp = newOtp;
+    user.passwordResetExpires = Date.now() + 10 * 60 * 1000; 
+    
+    // 🛡️ Update Rate Limit Fields
+    user.lastOtpSentAt = Date.now();
+    user.otpResendCount += 1;
+
+    await user.save({ validateBeforeSave: false });
+
+    return { user, newOtp };
 };
 
 /**

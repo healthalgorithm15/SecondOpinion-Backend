@@ -39,7 +39,32 @@ exports.forgotPassword = async (req, res) => {
         res.status(400).json({ success: false, message: err.message }); 
     }
 };
+exports.resendOTP = async (req, res) => {
+    try {
+        const { identifier } = req.body;
+        if (!identifier) throw new Error("Identifier is required");
 
+        const { user, newOtp } = await authService.resendOTP(identifier);
+        const isEmailInput = identifier.includes('@');
+
+        // 📧 Handle Email Resend
+        if (isEmailInput && user.email) {
+            await sendEmail({ 
+                email: user.email, 
+                subject: 'PramanAI: Your New Verification Code', 
+                message: `<h1 style="color: #1E7D75;">${newOtp}</h1><p>This code expires in 15 mins.</p>` 
+            });
+        } 
+        // 📱 Handle SMS Resend
+        else if (!isEmailInput && user.mobile) {
+            await sendSMS(user.mobile, `Your new PramanAI code is: ${newOtp}`);
+        }
+
+        res.status(200).json({ success: true, message: 'New code sent successfully' });
+    } catch (err) {
+        res.status(400).json({ success: false, message: err.message });
+    }
+};
 exports.resetPassword = async (req, res) => {
     try {
         // 🚀 Added 'password' to destructuring to match frontend payload
