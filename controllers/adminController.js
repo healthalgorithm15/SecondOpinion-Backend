@@ -1,4 +1,5 @@
 const adminService = require('../services/adminService');
+const Transaction = require('../models/Transaction');
 
 exports.createDoctor = async (req, res) => {
     try {
@@ -45,9 +46,10 @@ exports.assignDoctorToCase = async (req, res) => {
     }
 };
 
+// Inside adminController.js
 exports.getTransactions = async (req, res) => {
     try {
-        const transactions = await Transaction.find().populate('patientId', 'name email mobile').sort({ createdAt: -1 });
+        const transactions = await adminService.fetchAllTransactions();
         res.status(200).json({ success: true, data: transactions });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });

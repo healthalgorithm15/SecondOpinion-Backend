@@ -71,6 +71,18 @@ class AdminService {
         if (!transaction) throw new Error("Transaction not found");
         return transaction;
     }
+
+    /**
+     * 7. Fetch All Transactions
+     * FIXED: Removed 'exports' keyword and used correct class method syntax.
+     */
+  // services/adminService.js
+
+async fetchAllTransactions() {
+    return await Transaction.find()
+        .populate('patientId', 'name email mobile') // Use patientId to match your schema
+        .sort({ createdAt: -1 });
+}
 }
 
 module.exports = new AdminService();
