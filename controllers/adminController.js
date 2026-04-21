@@ -1,37 +1,64 @@
-const User = require('../models/User');
-
+const adminService = require('../services/adminService');
 
 exports.createDoctor = async (req, res) => {
     try {
-        const { name, email, mobile, specialization, mciNumber } = req.body;
-
-        // ... existence checks ...
-
-        const rawTempPassword = `Praman@${Math.floor(1000 + Math.random() * 9000)}`;
-
-        const doctor = await User.create({
-            name,
-            email,
-            mobile,
-            specialization,
-            mciNumber,
-            password: rawTempPassword, // 👈 PASS RAW PASSWORD. The pre-save hook will hash it!
-            role: 'doctor',
-            isVerified: true,
-            isEmailVerified: true,
-            isProfileApproved: true,
-            isFirstLogin: true 
-        });
-
-        res.status(201).json({
-            success: true,
-            message: "Doctor account created successfully",
-            data: {
-                email: doctor.email,
-                tempPassword: rawTempPassword // Use this to tell the admin what code to give the doctor
-            }
-        });
+        const result = await adminService.createDoctorAccount(req.body);
+        res.status(201).json({ success: true, message: "Doctor account created", data: { email: result.doctor.email, tempPassword: result.rawTempPassword } });
     } catch (error) {
         res.status(400).json({ success: false, message: error.message });
+    }
+};
+
+exports.getAdminDashboard = async (req, res) => {
+    try {
+        const [users, cases, finance] = await adminService.getDashboardStats();
+        res.status(200).json({ success: true, data: { users, cases, finance } });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+exports.getAllUsers = async (req, res) => {
+    try {
+        const users = await adminService.fetchAllUsers(req.query.role);
+        res.status(200).json({ success: true, data: users });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+exports.getAllCases = async (req, res) => {
+    try {
+        const cases = await adminService.fetchAllCases();
+        res.status(200).json({ success: true, data: cases });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+exports.assignDoctorToCase = async (req, res) => {
+    try {
+        const updatedCase = await adminService.updateCaseDoctor(req.body.caseId, req.body.doctorId);
+        res.status(200).json({ success: true, message: `Assigned to Dr. ${updatedCase.doctorId.name}`, data: updatedCase });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+exports.getTransactions = async (req, res) => {
+    try {
+        const transactions = await Transaction.find().populate('patientId', 'name email mobile').sort({ createdAt: -1 });
+        res.status(200).json({ success: true, data: transactions });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+exports.verifyPaymentManually = async (req, res) => {
+    try {
+        const transaction = await adminService.verifyTransactionManually(req.body.transactionId);
+        res.status(200).json({ success: true, message: "Payment verified", data: transaction });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
     }
 };
