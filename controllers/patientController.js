@@ -2,7 +2,6 @@ const MedicalRecord = require('../models/MedicalRecord');
 const ReviewCase = require('../models/ReviewCase');
 const Transaction = require('../models/Transaction'); 
 const aiService = require('../services/aiService');
-const config = require('../config');
 const mongoose = require('mongoose');
 
 /**
@@ -19,25 +18,17 @@ exports.getDashboard = async (req, res) => {
       status: { $ne: 'COMPLETED' } 
     }).sort({ createdAt: -1 });
 
-    /**
-     * 2. Check for Unused Payment Credit
-     * Optimized to check for standard 'paid' transactions without a linked scanId.
-     */
+    // 2. Check for Unused Payment Credit
     const unusedPayment = await Transaction.findOne({
       patientId: userId,
       status: 'paid',
       $or: [
         { scanId: { $exists: false } },
-        { scanId: null },
-       // { scanId: 'new_scan' }
+        { scanId: null }
       ]
     });
 
-    /**
-     * 🟢 PRODUCTION FIX: Fetch Draft Reports
-     * The frontend needs the list of uploaded documents that are NOT yet submitted.
-     * Without this, the UploadView will show "No Documents".
-     */
+    // 3. Fetch Draft Reports (Not yet submitted to a case)
     const draftReports = await MedicalRecord.find({ 
       userId: userId, 
       isSubmitted: false 
@@ -53,7 +44,7 @@ exports.getDashboard = async (req, res) => {
         },
         activeCase: activeCase || null,
         hasActivePayment: !!unusedPayment,
-        draftReports: draftReports || [] // 👈 Essential for frontend UploadView
+        draftReports: draftReports || [] 
       }
     });
   } catch (error) {
@@ -65,9 +56,10 @@ exports.getDashboard = async (req, res) => {
 /**
  * @desc    Submit reports for Specialist Review (Atomic Transaction)
  * @route   POST /api/patient/submit-review
+ * @update  Added patientNote to capture clinical context/messages
  */
 exports.submitReview = async (req, res) => {
-  const { reportIds } = req.body; 
+  const { reportIds, patientNote } = req.body; 
   const userId = req.user._id;
 
   if (!reportIds || reportIds.length === 0) {
@@ -80,11 +72,11 @@ exports.submitReview = async (req, res) => {
     let newCaseId;
 
     await session.withTransaction(async () => {
-      // 1. Verify ownership and existence of the draft records
+      // 1. Verify ownership of draft records
       const ownedRecords = await MedicalRecord.find({ 
         _id: { $in: reportIds }, 
         userId: userId,
-        isSubmitted: false // Only allow submitting drafts
+        isSubmitted: false 
       }).session(session);
 
       if (ownedRecords.length !== reportIds.length) {
@@ -97,25 +89,23 @@ exports.submitReview = async (req, res) => {
         status: 'paid',
         $or: [
           { scanId: null },
-         // { scanId: 'new_scan' },
           { scanId: { $exists: false } }
         ]
       }).session(session);
 
-      if (!paymentCredit) {
-        throw new Error("NO_ACTIVE_PAYMENT");
-      }
+      if (!paymentCredit) throw new Error("NO_ACTIVE_PAYMENT");
 
-      // 3. Create the Review Case
+      // 3. Create the Review Case with the Patient Note
       const newCase = new ReviewCase({ 
         patientId: userId, 
         recordIds: reportIds, 
+        patientNote: patientNote || "", // Store the clinical message here
         status: 'AI_PROCESSING' 
       });
       await newCase.save({ session });
       newCaseId = newCase._id;
 
-      // 4. Mark credit as "Used"
+      // 4. Mark credit as "Used" (Link transaction to case)
       paymentCredit.scanId = newCaseId;
       await paymentCredit.save({ session });
 
@@ -127,7 +117,7 @@ exports.submitReview = async (req, res) => {
       );
     });
 
-    // 6. Notify doctors via Socket.io
+    // 6. Notify doctors/CMO via Socket.io
     if (global.io) {
       global.io.to('doctor').emit('new_case_submitted', { 
         caseId: newCaseId, 
@@ -135,8 +125,7 @@ exports.submitReview = async (req, res) => {
       });
     }
 
-    // 7. Trigger the AI background service
-    // Ensure aiService is robust enough to handle the caseId
+    // 7. Trigger AI background service (Patient Note is now available in the DB for the AI)
     aiService.analyzeReports(newCaseId).catch(err => console.error("AI Service Error:", err)); 
 
     res.status(200).json({ success: true, caseId: newCaseId });
@@ -170,7 +159,6 @@ exports.reuseRecord = async (req, res) => {
     const original = await MedicalRecord.findById(reportId);
     if (!original) return res.status(404).json({ success: false, message: "Record not found." });
 
-    // Ensure they can't clone someone else's record
     if (original.userId.toString() !== userId.toString()) {
       return res.status(403).json({ success: false, message: "Unauthorized." });
     }
@@ -199,9 +187,7 @@ exports.reuseRecord = async (req, res) => {
  */
 exports.uploadRecord = async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ success: false, message: "No file provided." });
-    }
+    if (!req.file) return res.status(400).json({ success: false, message: "No file provided." });
 
     const newRecord = new MedicalRecord({
       userId: req.user._id,
@@ -254,15 +240,15 @@ exports.getCaseStatus = async (req, res) => {
 };
 
 /**
- * @desc    View Medical Document (Serves binary data with correct headers)
+ * @desc    View Medical Document (Serves binary data)
  */
 exports.viewLocalFile = async (req, res) => {
   try {
     const record = await MedicalRecord.findById(req.params.id);
     if (!record) return res.status(404).json({ success: false, message: "Record not found." });
 
-    // Authorization check
-    if (record.userId.toString() !== req.user._id.toString() && req.user.role !== 'doctor') {
+    // Allow owner or the assigned medical staff to view
+    if (record.userId.toString() !== req.user._id.toString() && !['doctor', 'cmo', 'admin'].includes(req.user.role)) {
       return res.status(403).json({ success: false, message: "Access denied." });
     }
 
@@ -298,19 +284,52 @@ exports.deleteRecord = async (req, res) => {
 };
 
 /**
- * @desc    Fetch Complete Case History (Vault)
+ * @desc    Fetch Complete Case History (Vault) - SANITIZED
  */
 exports.getReviewHistory = async (req, res) => {
   try {
-    const query = { patientId: req.user._id };
-    const cases = await ReviewCase.find(query)
+    const cases = await ReviewCase.find({ patientId: req.user._id })
       .populate('recordIds', 'title fileName contentType createdAt')
       .populate('doctorId', 'name specialization')
       .sort({ createdAt: -1 })
       .lean();
 
-    res.status(200).json({ success: true, data: cases });
+    // 🛡️ SECURITY GATE: Ensure internal opinions are hidden until COMPLETED
+    const sanitizedHistory = cases.map(c => {
+      if (c.status !== 'COMPLETED') {
+        delete c.doctorOpinion;
+      }
+      return c;
+    });
+
+    res.status(200).json({ success: true, data: sanitizedHistory });
   } catch (error) {
     res.status(500).json({ success: false, message: "Error fetching history." });
+  }
+};
+
+/**
+ * @desc    Get Detailed Case by ID - SANITIZED
+ */
+exports.getPatientCaseById = async (req, res) => {
+  try {
+    const caseData = await ReviewCase.findById(req.params.id)
+      .populate('doctorId', 'name specialization')
+      .populate('recordIds', 'title category');
+
+    if (!caseData || caseData.patientId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: "Access denied." });
+    }
+
+    const responseData = caseData.toObject();
+    
+    // 🛡️ SECURITY GATE: Strictly hide the opinion unless finalized by CMO (status COMPLETED)
+    if (responseData.status !== 'COMPLETED') {
+      delete responseData.doctorOpinion; 
+    }
+    
+    res.status(200).json({ success: true, data: responseData });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
   }
 };

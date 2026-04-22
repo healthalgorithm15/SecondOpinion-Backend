@@ -4,20 +4,26 @@ const mongoose = require('mongoose');
 
 /**
  * 🔔 IMPORT CENTRALIZED NOTIFICATION HELPER
- * This ensures that when a doctor submits an opinion, 
- * the high-priority push notification logic is triggered.
  */
 const caseController = require('./caseController'); 
 
 /**
  * @desc    Get all cases awaiting specialist review
  * @route   GET /api/doctor/pending-cases
- * @access  Private (Doctor Only)
+ * @access  Private (Doctor & CMO)
  */
 exports.getPendingCases = async (req, res) => {
   try {
-    const cases = await ReviewCase.find({ status: 'PENDING_DOCTOR' })
-      .select('status aiAnalysis createdAt patientId recordIds') 
+    // 🟢 DYNAMIC QUERY: CMO sees the global queue, Doctor sees their assignments
+    let query = { status: 'PENDING_DOCTOR' };
+
+    if (req.user.role === 'doctor') {
+      query.assignedTo = req.user._id;
+    } 
+    // CMO role does not add the assignedTo filter, allowing a full view
+
+    const cases = await ReviewCase.find(query)
+      .select('status aiAnalysis createdAt patientId recordIds assignedTo') 
       .populate('patientId', 'name age gender') 
       .populate({ 
         path: 'recordIds', 
@@ -46,6 +52,7 @@ exports.getPendingCases = async (req, res) => {
 /**
  * @desc    Get details for a specific case including all medical records
  * @route   GET /api/doctor/case/:caseId
+ * @access  Private (Assigned Doctor, CMO, or Admin)
  */
 exports.getCaseById = async (req, res) => {
   try {
@@ -61,6 +68,14 @@ exports.getCaseById = async (req, res) => {
       return res.status(404).json({ success: false, message: "Case not found." });
     }
 
+    // 🛡️ SECURITY: Verify access permissions
+    const isAssigned = caseData.assignedTo?.toString() === req.user._id.toString();
+    const isPrivileged = ['admin', 'cmo'].includes(req.user.role);
+
+    if (!isAssigned && !isPrivileged) {
+      return res.status(403).json({ success: false, message: "Unauthorized access to this case." });
+    }
+
     res.status(200).json({ success: true, data: caseData });
   } catch (error) {
     console.error("❌ Get Case Detail Error:", error);
@@ -69,29 +84,29 @@ exports.getCaseById = async (req, res) => {
 };
 
 /**
- * @desc    Submit final medical opinion and close the case (Atomic Transaction)
+ * @desc    Submit medical opinion for CMO review (Atomic Transaction)
  * @route   POST /api/doctor/submit-opinion
+ * @access  Private (Assigned Doctor Only)
  */
 exports.submitOpinion = async (req, res) => {
-  const { caseId, diagnosis, summary, finalVerdict, recommendations } = req.body;
-
-  // Support both legacy naming and updated naming conventions
-  const verdictValue = (finalVerdict || diagnosis)?.trim();
-  const notesValue = (recommendations || summary)?.trim();
+  const { caseId, finalVerdict, recommendations } = req.body;
+  const verdictValue = finalVerdict?.trim();
+  const notesValue = recommendations?.trim();
 
   if (!verdictValue || !notesValue) {
-    return res.status(400).json({ 
-      success: false, 
-      message: "Both a final verdict and clinical recommendations are required." 
-    });
+    return res.status(400).json({ success: false, message: "Verdict and recommendations are required." });
   }
 
   const session = await mongoose.startSession();
-
   try {
     await session.withTransaction(async () => {
+      // 🛡️ SECURITY: Verify status AND that the submitter is the assigned doctor
       const updatedCase = await ReviewCase.findOneAndUpdate(
-        { _id: caseId, status: { $ne: 'COMPLETED' } },
+        { 
+          _id: caseId, 
+          status: 'PENDING_DOCTOR',
+          assignedTo: req.user._id 
+        },
         {
           doctorId: req.user._id, 
           doctorOpinion: { 
@@ -99,49 +114,44 @@ exports.submitOpinion = async (req, res) => {
             recommendations: notesValue, 
             reviewedAt: new Date() 
           },
-          status: 'COMPLETED'
+          status: 'PENDING_CMO_APPROVAL'
         },
         { new: true, session }
       );
 
-      if (!updatedCase) {
-        throw new Error("CASE_NOT_FOUND_OR_FINALIZED");
-      }
+      if (!updatedCase) throw new Error("CASE_NOT_FOUND_OR_UNAUTHORIZED");
 
-      // Mark all associated records as completed/archived
+      // Update associated records status
       await MedicalRecord.updateMany(
         { _id: { $in: updatedCase.recordIds } },
-        { $set: { status: 'COMPLETED' } },
+        { $set: { status: 'PENDING_APPROVAL' } }, 
         { session }
       );
     });
 
-    /**
-     * 🏆 TRIGGER PATIENT NOTIFICATION
-     * Using the high-priority helper from caseController to wake the patient's device.
-     */
-    caseController.notifyPatientReportReady(caseId); 
+    // 🔔 Notify CMO that a specialist has finished their work
+    caseController.notifyCMOReviewReady(caseId); 
 
     res.status(200).json({ 
       success: true, 
-      message: "Medical opinion submitted successfully. The patient has been notified." 
+      message: "Opinion submitted to CMO for final review." 
     });
 
   } catch (error) {
     console.error("🔥 Submit Opinion Error:", error);
-    const isClientError = error.message === "CASE_NOT_FOUND_OR_FINALIZED";
-    res.status(isClientError ? 400 : 500).json({ 
-      success: false, 
-      message: isClientError ? "Case not found or already completed." : "Server error during submission." 
-    });
+    const message = error.message === "CASE_NOT_FOUND_OR_UNAUTHORIZED" 
+      ? "Case not found or you are not the assigned specialist." 
+      : error.message;
+    res.status(500).json({ success: false, message });
   } finally {
     session.endSession();
   }
 };
 
 /**
- * @desc    Get all cases completed by the current doctor (Paginated)
+ * @desc    Get clinical history (Paginated)
  * @route   GET /api/doctor/history
+ * @access  Private (Doctor sees own, CMO sees all)
  */
 exports.getDoctorHistory = async (req, res) => {
   try {
@@ -149,14 +159,17 @@ exports.getDoctorHistory = async (req, res) => {
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
 
-    const query = { 
-      doctorId: req.user._id, 
-      status: 'COMPLETED' 
-    };
+    // 🟢 DYNAMIC QUERY: CMO sees full archive, Doctor sees their own completed cases
+    let query = { status: 'COMPLETED' };
+    
+    if (req.user.role === 'doctor') {
+      query.doctorId = req.user._id;
+    }
 
     const cases = await ReviewCase.find(query)
-      .select('patientId doctorOpinion updatedAt status')
+      .select('patientId doctorOpinion updatedAt status doctorId')
       .populate('patientId', 'name')
+      .populate('doctorId', 'name') // Allows CMO to see who performed the review
       .sort({ updatedAt: -1 })
       .skip(skip)
       .limit(limit)

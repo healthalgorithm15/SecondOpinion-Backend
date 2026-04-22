@@ -1,39 +1,58 @@
 const express = require('express');
 const router = express.Router();
-const { protect } = require('../middleware/authMiddleware'); 
+const { protect, authorize } = require('../middleware/authMiddleware'); 
 const doctorCtrl = require('../controllers/doctorController');
-
+const caseCtrl = require('../controllers/caseController');
 
 /**
  * 🛡️ Role-Based Access Control Middleware
- * Ensures the logged-in user is actually a specialist.
  */
-const authorizeDoctor = (req, res, next) => {
-    // We use .toLowerCase() to prevent case-sensitive mismatches (e.g., 'Doctor' vs 'doctor')
-    if (req.user && req.user.role.toLowerCase() === 'doctor') {
+const authorizeMedicalStaff = (req, res, next) => {
+    const role = req.user?.role?.toLowerCase();
+    if (['doctor', 'cmo', 'admin'].includes(role)) {
         return next();
     }
     return res.status(403).json({ 
         success: false, 
-        message: "Access Denied: You do not have the medical credentials to view this page." 
+        message: "Access Denied: Medical credentials required." 
     });
 };
 
-// --- PROTECT ALL DOCTOR ROUTES ---
-router.use(protect);          // Step 1: Must be logged in (JWT check)
-router.use(authorizeDoctor); // Step 2: Must be a specialist
+// --- PROTECT ALL ROUTES ---
+router.use(protect);                
+router.use(authorizeMedicalStaff);  
 
 /**
  * @route   GET /api/doctor/pending-cases
- * @desc    Fetch cases that have completed AI analysis and need a human doctor
+ * @desc    CMO sees all, Doctor sees assigned.
+ * 🟢 FIXED: Points to doctorCtrl.getPendingCases
  */
 router.get('/pending-cases', doctorCtrl.getPendingCases);
+
+/**
+ * @route   PUT /api/doctor/assign
+ * @desc    CMO assigns a case to a specific doctor
+ */
+router.put('/assign', authorize('cmo', 'admin'), caseCtrl.assignCase);
+
+/**
+ * @route   GET /api/doctor/case/:caseId
+ */
 router.get('/case/:caseId', doctorCtrl.getCaseById);
+
 /**
  * @route   POST /api/doctor/submit-opinion
- * @desc    Specialist submits the final medical verdict for a case
  */
-router.post('/submit-opinion', doctorCtrl.submitOpinion);
+router.post('/submit-opinion', authorize('doctor', 'admin'), doctorCtrl.submitOpinion);
 
+/**
+ * @route   GET /api/doctor/history
+ */
 router.get('/history', doctorCtrl.getDoctorHistory);
+
+/**
+ * @route   POST /api/doctor/cmo-approve
+ */
+router.post('/cmo-approve', authorize('cmo', 'admin'), caseCtrl.cmoFinalApproval);
+
 module.exports = router;

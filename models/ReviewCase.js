@@ -4,12 +4,36 @@ const ReviewCaseSchema = new mongoose.Schema({
   patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   doctorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true }, 
   recordIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'MedicalRecord', required: true }],
+  patientNote: {
+        type: String,
+        trim: true,
+        maxlength: 2000 // Limit to ~300-400 words
+    },
+
+  assignedTo: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'User', 
+    default: null, // Initially unassigned
+    index: true 
+  },
 
   status: { 
     type: String, 
-    enum: ['AI_PROCESSING', 'PENDING_DOCTOR', 'COMPLETED', 'CANCELLED'],
+    enum: ['AI_PROCESSING', 
+      'UNASSIGNED',          // Waiting for CMO to assign
+      'PENDING_DOCTOR',      // Assigned to a Specialist
+      'PENDING_CMO_APPROVAL', // Specialist finished, waiting for CMO sign-off 🟢 NEW
+      'COMPLETED',           // CMO approved, patient can see it
+      'CANCELLED'],
     default: 'AI_PROCESSING' 
   },
+
+  assignmentHistory: [{
+    from: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    to: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    assignedAt: { type: Date, default: Date.now },
+    note: String
+  }],
 
   aiAnalysis: {
     summary: String,
@@ -36,7 +60,10 @@ const ReviewCaseSchema = new mongoose.Schema({
   doctorOpinion: {
     finalVerdict: String,
     recommendations: String,
-    reviewedAt: Date
+    reviewedAt: Date,
+    approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    approvedAt: Date,
+    cmoPrivateNote: String
   }
 }, { timestamps: true }); // Automatically handles createdAt and updatedAt
 

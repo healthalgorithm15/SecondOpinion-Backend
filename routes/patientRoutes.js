@@ -10,7 +10,8 @@ const {
     getCaseStatus,
     getReviewHistory,
     deleteRecord,
-    reuseRecord // 🟢 NEW: Added for History Reuse functionality
+    reuseRecord,
+    getPatientCaseById // 🟢 ADDED: Required for detailed view in Vault/History
 } = require('../controllers/patientController');
 
 const { 
@@ -34,27 +35,33 @@ router.use(protect);
 
 /**
  * @route   GET /api/patient/dashboard
- * @desc    Fetches user profile, drafts (Scenario 2), and active cases (Scenario 3)
+ * @desc    Fetches user profile, drafts, and active cases
  */
 router.get('/dashboard', apiLimiter, getDashboard);
 
 /**
  * @route   POST /api/patient/upload
- * @desc    Handles initial multipart file uploads (Scenario 1)
+ * @desc    Handles initial multipart file uploads (Saves as Draft)
  */
 router.post('/upload', upload.single('file'), uploadRecord);
 
 /**
  * @route   POST /api/patient/records/reuse
- * @desc    🟢 NEW: Adds a document from medical vault/history to current drafts
+ * @desc    Adds a document from medical vault/history to current drafts
  */
 router.post('/records/reuse', apiLimiter, reuseRecord);
 
 /**
  * @route   POST /api/patient/submit-review
- * @desc    Transitions Drafts to an Active Case (Scenario 2 -> 3)
+ * @desc    Transitions Drafts to an Active Case (Requires Payment Credit)
  */
 router.post('/submit-review', apiLimiter, submitReview);
+
+/**
+ * @route   GET /api/patient/case-detail/:id
+ * @desc    🟢 ADDED: Required to view full case details in the Vault
+ */
+router.get('/case-detail/:id', apiLimiter, getPatientCaseById);
 
 /**
  * @route   GET /api/patient/case/:caseId
@@ -64,31 +71,31 @@ router.get('/case/:caseId', apiLimiter, getCaseStatus);
 
 /**
  * @route   GET /api/patient/view/:id
- * @desc    Streams the binary file (Buffer) or returns URL for viewing
+ * @desc    Streams the binary file (Buffer) for viewing
  */
 router.get('/view/:id', apiLimiter, viewLocalFile);
 
 /**
  * @route   GET /api/patient/history
- * @desc    Fetches all completed and past cases for the Medical Vault
+ * @desc    Fetches all past cases (Medical Vault)
  */
 router.get('/history', apiLimiter, getReviewHistory);
 
 /**
  * @route   DELETE /api/patient/record/:id
- * @desc    Deletes a record (Only allowed if isSubmitted is false)
+ * @desc    Deletes a record (Only if isSubmitted is false)
  */
 router.delete('/record/:id', deleteRecord);
 
 /**
  * @route   GET /api/patient/case/pdf-ai/:caseId
- * @desc    Generates/Fetches PDF for AI Analysis results
+ * @desc    Generates PDF for AI Analysis results
  */
 router.get('/case/pdf-ai/:caseId', getAIAnalysisPDF);
 
 /**
  * @route   GET /api/patient/case/pdf-doctor/:caseId
- * @desc    Generates/Fetches PDF for Doctor's Final Verdict
+ * @desc    Generates PDF for Doctor's Final Verdict (Only if status is COMPLETED)
  */
 router.get('/case/pdf-doctor/:caseId', getDoctorReviewPDF);
 

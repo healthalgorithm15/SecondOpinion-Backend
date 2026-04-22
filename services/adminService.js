@@ -3,29 +3,46 @@ const ReviewCase = require('../models/ReviewCase');
 const Transaction = require('../models/Transaction');
 
 class AdminService {
-    // 1. Create Doctor Logic
+    /**
+     * 🟢 1. CREATE MEDICAL STAFF ACCOUNT
+     * Handles both Doctors and CMOs with temporary passwords.
+     */
     async createDoctorAccount(data) {
-        const { name, email, mobile, specialization, mciNumber } = data;
+        const { name, email, mobile, specialization, mciNumber, role } = data;
 
-        const existingUser = await User.findOne({ $or: [{ email }, { mobile }, { mciNumber }] });
-        if (existingUser) throw new Error("Doctor with this email, mobile, or MCI already exists");
+        // Ensure we check for existing users based on available unique fields
+        const searchCriteria = [{ email }, { mobile }];
+        if (mciNumber) searchCriteria.push({ mciNumber });
 
+        const existingUser = await User.findOne({ $or: searchCriteria });
+        if (existingUser) {
+            throw new Error("Staff with this email, mobile, or MCI already exists");
+        }
+
+        // Generate a secure, readable temporary password
+        // Format: Praman@1234
         const rawTempPassword = `Praman@${Math.floor(1000 + Math.random() * 9000)}`;
 
-        const doctor = await User.create({
-            name, email, mobile, specialization, mciNumber,
+        const staff = await User.create({
+            name,
+            email,
+            mobile,
+            specialization,
+            mciNumber: mciNumber || undefined,
             password: rawTempPassword,
-            role: 'doctor',
+            role: role || 'doctor', // 🟢 Dynamic role: 'doctor' or 'cmo'
             isVerified: true,
             isEmailVerified: true,
             isProfileApproved: true,
-            isFirstLogin: true 
+            isFirstLogin: true // 🟢 Triggers the 'Change Password' flow on frontend
         });
 
-        return { doctor, rawTempPassword };
+        return { doctor: staff, rawTempPassword };
     }
 
-    // 2. Dashboard Stats Aggregation
+    /**
+     * 📊 2. DASHBOARD STATS AGGREGATION
+     */
     async getDashboardStats() {
         return await Promise.all([
             User.aggregate([{ $group: { _id: "$role", count: { $sum: 1 } } }]),
@@ -34,13 +51,17 @@ class AdminService {
         ]);
     }
 
-    // 3. User Directory
+    /**
+     * 🔍 3. USER DIRECTORY
+     */
     async fetchAllUsers(role) {
         const filter = role ? { role } : {};
         return await User.find(filter).sort({ createdAt: -1 });
     }
 
-    // 4. Case History
+    /**
+     * 📋 4. CASE HISTORY
+     */
     async fetchAllCases() {
         return await ReviewCase.find()
             .populate('patientId', 'name email mobile')
@@ -48,23 +69,43 @@ class AdminService {
             .sort({ createdAt: -1 });
     }
 
-    // 5. Reassign Doctor
-    async updateCaseDoctor(caseId, doctorId) {
+    /**
+     * 🔄 5. REASSIGN DOCTOR / CASE MANAGEMENT
+     */
+    async updateCaseDoctor(caseId, doctorId, adminId) {
         const updatedCase = await ReviewCase.findByIdAndUpdate(
             caseId,
-            { doctorId, status: 'PENDING_DOCTOR' },
+            { 
+                doctorId, 
+                assignedTo: doctorId, 
+                status: 'PENDING_DOCTOR',
+                $push: { 
+                    assignmentHistory: { 
+                        from: adminId, 
+                        to: doctorId, 
+                        note: "Reassigned via Management Panel",
+                        timestamp: new Date()
+                    } 
+                }
+            },
             { new: true }
-        ).populate('doctorId', 'name');
+        ).populate('doctorId', 'name specialization');
         
         if (!updatedCase) throw new Error("Case not found");
         return updatedCase;
     }
 
-    // 6. Manual Payment Verification
+    /**
+     * 💳 6. MANUAL PAYMENT VERIFICATION
+     */
     async verifyTransactionManually(transactionId) {
         const transaction = await Transaction.findByIdAndUpdate(
             transactionId,
-            { status: 'paid', verifiedBy: 'admin_manual', paidAt: Date.now() },
+            { 
+                status: 'paid', 
+                verifiedBy: 'admin_manual', 
+                paidAt: Date.now() 
+            },
             { new: true }
         );
         
@@ -73,16 +114,13 @@ class AdminService {
     }
 
     /**
-     * 7. Fetch All Transactions
-     * FIXED: Removed 'exports' keyword and used correct class method syntax.
+     * 📑 7. FETCH ALL TRANSACTIONS
      */
-  // services/adminService.js
-
-async fetchAllTransactions() {
-    return await Transaction.find()
-        .populate('patientId', 'name email mobile') // Use patientId to match your schema
-        .sort({ createdAt: -1 });
-}
+    async fetchAllTransactions() {
+        return await Transaction.find()
+            .populate('patientId', 'name email mobile') 
+            .sort({ createdAt: -1 });
+    }
 }
 
 module.exports = new AdminService();

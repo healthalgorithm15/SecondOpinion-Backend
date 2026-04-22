@@ -1,25 +1,25 @@
 const User = require('../models/User');
 const ReviewCase = require('../models/ReviewCase');
 const aiService = require('../services/aiService');
+const caseService = require('../services/caseService');
 const { Expo } = require('expo-server-sdk');
 
 const expo = new Expo();
 
 /**
  * 🟡 START ANALYSIS
- * Triggered when a patient successfully pays/uploads.
- * Updates status and kicks off the background AI process.
+ * Triggered manually if needed, or automatically after payment/submission.
  */
 exports.startCaseAnalysis = async (req, res) => {
   try {
     const { caseId } = req.params;
 
-    // Update status so UI shows "AI Processing"
-    await ReviewCase.findByIdAndUpdate(caseId, { status: 'AI_PROCESSING' });
+    await ReviewCase.findByIdAndUpdate(caseId, { 
+      status: 'AI_PROCESSING',
+      assignedTo: null 
+    });
 
-    // 🟢 PRODUCTION LOGIC: Background Execution
-    // We don't 'await' this because we want to return a response to the app immediately
-    // while the AI works in the background (which can take 30-60 seconds).
+    // Background Execution: AI Service handles text extraction and logic
     aiService.analyzeReports(caseId).catch(err => {
         console.error(`CRITICAL: Background AI Analysis failed for ${caseId}:`, err);
     });
@@ -31,49 +31,47 @@ exports.startCaseAnalysis = async (req, res) => {
 };
 
 /**
- * 🟢 NOTIFY DOCTOR: AI Analysis Complete
- * Called by aiService once the background processing is finished.
+ * 🟢 NOTIFY CMO: AI Analysis Complete
+ * Moves status to UNASSIGNED so CMO can assign a specialist.
  */
 exports.notifyDoctorCaseReady = async (caseId) => {
   try {
-    const updatedCase = await ReviewCase.findById(caseId).populate('patientId');
+    const updatedCase = await ReviewCase.findByIdAndUpdate(
+      caseId, 
+      { status: 'UNASSIGNED' }, 
+      { new: true }
+    ).populate('patientId', 'name pushToken');
+
     if (!updatedCase) return;
     
-    // 1. Socket Emit: Syncing the tracker strip in Patient UI
+    // Socket Logic: Live dashboard updates
     if (global.io) {
       global.io.emit('caseStatusUpdate', { 
         caseId: updatedCase._id, 
-        status: 'PENDING_DOCTOR', 
+        status: 'UNASSIGNED', 
         patientId: updatedCase.patientId?._id 
       });
 
-      // Alert doctors in the 'doctor' socket room
-      global.io.to('doctor').emit('case_ready_for_review', {
+      global.io.to('cmo').emit('new_case_to_assign', {
         caseId: updatedCase._id,
         patientName: updatedCase.patientId?.name,
         riskLevel: updatedCase.aiAnalysis?.riskLevel
       });
     }
 
-    // 2. Doctor Push Notifications
-    const doctors = await User.find({ role: 'doctor', pushToken: { $ne: null } });
+    // Notify CMOs via Push Notifications
+    const cmos = await User.find({ role: 'cmo', pushToken: { $ne: null } });
     let messages = [];
 
-    for (let doc of doctors) {
-      if (!Expo.isExpoPushToken(doc.pushToken)) continue;
-      
+    for (let cmo of cmos) {
+      if (!Expo.isExpoPushToken(cmo.pushToken)) continue;
       messages.push({
-        to: doc.pushToken,
+        to: cmo.pushToken,
         sound: 'default',
-        title: 'Action Required: New Case 🩺',
-        body: `[${updatedCase.aiAnalysis?.riskLevel || 'Normal'} Priority] AI analysis complete for ${updatedCase.patientId?.name}.`,
-        data: { 
-          caseId: updatedCase._id.toString(), 
-          type: 'NEW_CASE',
-          screen: 'doctor-review'
-        },
-        priority: 'high',
-        channelId: 'default'
+        title: 'New Case for Assignment 📋',
+        body: `AI Analysis complete for ${updatedCase.patientId?.name}. Please assign a specialist.`,
+        data: { caseId: updatedCase._id.toString(), type: 'ASSIGNMENT_REQUIRED', screen: 'cmo-dashboard' },
+        priority: 'high'
       });
     }
 
@@ -83,52 +81,167 @@ exports.notifyDoctorCaseReady = async (caseId) => {
         await expo.sendPushNotificationsAsync(chunk);
       }
     }
-    console.log(`✅ Doctor notifications dispatched for Case: ${caseId}`);
   } catch (error) {
-    console.error("Notification System Failure:", error);
+    console.error("CMO Notification Failure:", error);
   }
 };
 
 /**
- * 🔵 NOTIFY PATIENT: Specialist Review Complete
- * Triggered by the doctor submitting their final opinion.
+ * 🟠 ASSIGN CASE (CMO/Admin ONLY)
+ */
+exports.assignCase = async (req, res) => {
+  try {
+    const { caseId, doctorId, note } = req.body;
+
+    if (!['cmo', 'admin'].includes(req.user.role)) {
+      return res.status(403).json({ success: false, message: "Unauthorized: CMO access required" });
+    }
+
+    const updatedCase = await caseService.assignCaseToSpecialist(
+      caseId, 
+      doctorId, 
+      req.user._id, 
+      note
+    );
+
+    res.status(200).json({ success: true, data: updatedCase });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+/**
+ * 🔍 GET DOCTOR/CMO CASES
+ * Dynamically filters based on role and assignment.
+ */
+exports.getDoctorCases = async (req, res) => {
+  try {
+    let query = {};
+    const role = req.user.role.toLowerCase();
+
+    if (role === 'cmo' || role === 'admin') {
+      // CMOs see everything requiring action: New, In-Progress, and Awaiting Approval
+      query = { status: { $in: ['UNASSIGNED', 'PENDING_DOCTOR', 'PENDING_CMO_APPROVAL'] } };
+    } else {
+      // Specialists only see cases assigned to them
+      query = { assignedTo: req.user._id, status: 'PENDING_DOCTOR' };
+    }
+
+    const cases = await ReviewCase.find(query)
+      .populate('patientId', 'name email')
+      .select('+patientNote') // Ensure clinical context is included
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({ success: true, data: cases });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+/**
+ * 🔵 NOTIFY PATIENT: Final Report Published
  */
 exports.notifyPatientReportReady = async (caseId) => {
   try {
     const updatedCase = await ReviewCase.findById(caseId).populate('patientId');
     if (!updatedCase || !updatedCase.patientId) return;
 
-    const patient = updatedCase.patientId;
-
-    // 1. Socket Emit: Instant UI update if app is open
     if (global.io) {
       global.io.emit('caseStatusUpdate', {
         caseId: updatedCase._id,
         status: 'COMPLETED',
-        patientId: patient._id
+        patientId: updatedCase.patientId._id
       });
     }
 
-    // 2. Push Notification logic for "1-2 day" wait period
+    const patient = updatedCase.patientId;
     if (patient.pushToken && Expo.isExpoPushToken(patient.pushToken)) {
       const message = {
         to: patient.pushToken,
         sound: 'default',
         title: 'Medical Report Ready! ✅',
-        body: `Hi ${patient.name.split(' ')[0]}, your specialist review is now available.`,
-        data: { 
-          caseId: updatedCase._id.toString(), 
-          type: 'REPORT_READY',
-          screen: 'case-summary' 
-        },
-        priority: 'high',
-        channelId: 'default'
+        body: `Hi ${patient.name.split(' ')[0]}, your specialist review is now available for download.`,
+        data: { caseId: updatedCase._id.toString(), type: 'REPORT_READY', screen: 'case-summary' },
+        priority: 'high'
       };
-
       await expo.sendPushNotificationsAsync([message]);
-      console.log(`✅ Success: Notification sent to patient ${patient.name}`);
     }
   } catch (error) {
-    console.error("❌ Patient Notification Error:", error);
+    console.error("Patient Notification Error:", error);
+  }
+};
+
+
+/**
+ * 📢 NOTIFY CMO: Specialist has submitted their review
+ */
+exports.notifyCMOReviewReady = async (caseId) => {
+  try {
+    const updatedCase = await ReviewCase.findById(caseId).populate('patientId', 'name');
+    const cmos = await User.find({ role: 'cmo', pushToken: { $ne: null } });
+    
+    let messages = [];
+    for (let cmo of cmos) {
+      if (!Expo.isExpoPushToken(cmo.pushToken)) continue;
+      messages.push({
+        to: cmo.pushToken,
+        sound: 'default',
+        title: 'Review Awaiting Approval 🔍',
+        body: `A specialist has submitted a verdict for ${updatedCase.patientId?.name}.`,
+        data: { caseId: caseId.toString(), type: 'APPROVAL_REQUIRED', screen: 'cmo-approval-detail' },
+        priority: 'high'
+      });
+    }
+    if (messages.length > 0) {
+      let chunks = expo.chunkPushNotifications(messages);
+      for (let chunk of chunks) await expo.sendPushNotificationsAsync(chunk);
+    }
+  } catch (err) { console.error("CMO Alert Fail:", err); }
+};
+
+/**
+ * 🏁 FINAL STEP: CMO APPROVAL & EDIT
+ * Finalizes the case, allowing the CMO to refine the doctor's recommendations.
+ */
+exports.cmoFinalApproval = async (req, res) => {
+  try {
+    const { caseId, updatedVerdict, updatedRecommendations, cmoPrivateNote } = req.body;
+
+    if (!['cmo', 'admin'].includes(req.user.role)) {
+      return res.status(403).json({ success: false, message: "CMO authority required." });
+    }
+
+    const updateData = {
+      status: 'COMPLETED',
+      'doctorOpinion.approvedBy': req.user._id,
+      'doctorOpinion.approvedAt': new Date()
+    };
+
+    // Apply CMO overrides if provided
+    if (updatedVerdict) updateData['doctorOpinion.finalVerdict'] = updatedVerdict;
+    if (updatedRecommendations) updateData['doctorOpinion.recommendations'] = updatedRecommendations;
+    if (cmoPrivateNote) updateData['doctorOpinion.cmoPrivateNote'] = cmoPrivateNote;
+
+    const updatedCase = await ReviewCase.findByIdAndUpdate(
+      caseId, 
+      { $set: updateData }, 
+      { new: true }
+    ).populate('patientId');
+
+    if (!updatedCase) {
+      return res.status(404).json({ success: false, message: "Case not found." });
+    }
+
+    // Publish results to patient
+    await exports.notifyPatientReportReady(caseId);
+
+    res.status(200).json({ 
+      success: true, 
+      message: "Report finalized and published to patient vault.",
+      data: updatedCase 
+    });
+  } catch (error) {
+    console.error("CMO Approval Error:", error);
+    res.status(500).json({ success: false, error: error.message });
   }
 };

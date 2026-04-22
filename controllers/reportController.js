@@ -2,7 +2,7 @@ const PDFDocument = require('pdfkit');
 const ReviewCase = require('../models/ReviewCase');
 
 /**
- * 🤖 IMPROVED AI ANALYSIS PDF
+ * 🤖 AI ANALYSIS PDF (Preliminary Clinical Context)
  */
 exports.getAIAnalysisPDF = async (req, res) => {
     try {
@@ -48,50 +48,49 @@ exports.getAIAnalysisPDF = async (req, res) => {
         );
 
         // --- 4. COLOR-CODED LAB MARKERS ---
-        // Get the dynamic Y position after the summary finishes
+        // CRITICAL: We use doc.y to ensure markers start AFTER the text content
         currentY = doc.y + 35; 
 
         if (caseData.aiAnalysis?.extractedMarkers?.length > 0) {
             doc.fillColor('#1E7D75').font('Helvetica-Bold').fontSize(14).text('Key Laboratory Markers', 50, currentY);
-            currentY += 22;
+            currentY = doc.y + 10;
 
             caseData.aiAnalysis.extractedMarkers.forEach((marker) => {
-                // Determine color based on content
-                let itemColor = '#334155'; // Default Slate
+                let itemColor = '#334155';
                 if (marker.includes('(High)') || marker.includes('(Abnormal)')) {
-                    itemColor = '#E11D48'; // Medical Red
+                    itemColor = '#E11D48';
                 } else if (marker.includes('(Low)')) {
-                    itemColor = '#D97706'; // Dark Orange/Gold
+                    itemColor = '#D97706';
                 }
 
-                doc.fillColor(itemColor).font('Helvetica').fontSize(10).text(`• ${marker}`, 60, currentY);
-                currentY += 18;
-
-                // Handle basic page overflow if list is extremely long
-                if (currentY > 700) {
+                // Check for page overflow
+                if (currentY > 720) {
                     doc.addPage();
                     currentY = 50;
                 }
+
+                doc.fillColor(itemColor).font('Helvetica').fontSize(10).text(`• ${marker}`, 60, currentY);
+                currentY = doc.y + 5;
             });
         }
 
         // --- 5. FOOTER ---
         const footerY = 730;
         doc.moveTo(50, footerY).lineTo(562, footerY).strokeColor('#E2E8F0').lineWidth(1).stroke();
-        doc.fontSize(8).fillColor('#94A3B8').text(
+        doc.fontSize(8).fillColor('#94A3B8').font('Helvetica').text(
             'IMPORTANT: This document is an automated preliminary analysis designed to assist clinical review. It does not constitute a final diagnosis or medical prescription.',
             50, footerY + 15, { width: 512, align: 'center' }
         );
 
         doc.end();
     } catch (err) {
-        console.error("PDF Generation Error:", err);
-        res.status(500).send('Error generating AI PDF');
+        console.error("AI PDF Error:", err);
+        if (!res.headersSent) res.status(500).send('Error generating AI PDF');
     }
 };
 
 /**
- * 👨‍⚕️ IMPROVED DOCTOR REVIEW PDF
+ * 👨‍⚕️ SPECIALIST VERDICT PDF (Final Report)
  */
 exports.getDoctorReviewPDF = async (req, res) => {
     try {
@@ -110,7 +109,7 @@ exports.getDoctorReviewPDF = async (req, res) => {
 
         // --- 1. PROFESSIONAL LETTERHEAD ---
         doc.fillColor('#1E7D75').font('Helvetica-Bold').fontSize(26).text('Praman AI', { align: 'left' });
-        doc.fontSize(10).fillColor('#64748B').text('Clinical Consultation Services', { align: 'left' });
+        doc.fontSize(10).fillColor('#64748B').font('Helvetica').text('Clinical Consultation Services', { align: 'left' });
         
         doc.moveDown(0.5);
         doc.moveTo(50, doc.y).lineTo(562, doc.y).strokeColor('#1E7D75').lineWidth(2).stroke();
@@ -124,27 +123,25 @@ exports.getDoctorReviewPDF = async (req, res) => {
         doc.fillColor('#64748B').font('Helvetica').fontSize(9).text('CASE REFERENCE', 350, startY);
         doc.fillColor('#1E293B').font('Helvetica-Bold').fontSize(12).text(caseId.toUpperCase(), 350, startY + 15);
 
-        doc.y = startY + 50;
-        doc.moveDown(2);
+        doc.moveDown(4);
 
         // --- 3. FINAL VERDICT SECTION ---
         doc.fillColor('#1E7D75').font('Helvetica-Bold').fontSize(14).text('FINAL CLINICAL VERDICT');
         doc.moveDown(0.5);
         
-        // Background box for emphasis
         const verdictText = reviewData.doctorOpinion?.finalVerdict || "No verdict recorded.";
         const textHeight = doc.heightOfString(verdictText, { width: 480 });
         
         doc.rect(50, doc.y, 512, textHeight + 20).fill('#F8FAFC');
         doc.fillColor('#1E293B').font('Helvetica-Bold').fontSize(12).text(verdictText, 65, doc.y + 10, { width: 480 });
 
-        doc.y += textHeight + 40;
+        doc.moveDown(3);
 
         // --- 4. RECOMMENDATIONS ---
         doc.fillColor('#1E7D75').font('Helvetica-Bold').fontSize(14).text('RECOMMENDATIONS & NEXT STEPS');
         doc.moveDown(0.8);
         doc.fillColor('#334155').font('Helvetica').fontSize(11).text(
-            reviewData.doctorOpinion?.recommendations || "Follow standard clinical protocols for the identified condition.",
+            reviewData.doctorOpinion?.recommendations || "Please follow up with your primary healthcare provider.",
             { width: 512, lineGap: 5, align: 'justify' }
         );
 
@@ -156,7 +153,7 @@ exports.getDoctorReviewPDF = async (req, res) => {
 
         doc.end();
     } catch (err) {
-        console.error(err);
-        res.status(500).send('Error generating Doctor PDF');
+        console.error("Doctor PDF Error:", err);
+        if (!res.headersSent) res.status(500).send('Error generating Doctor PDF');
     }
 };
