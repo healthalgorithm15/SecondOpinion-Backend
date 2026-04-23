@@ -191,3 +191,22 @@ exports.getDoctorHistory = async (req, res) => {
     res.status(500).json({ success: false, message: "Error fetching clinical history." });
   }
 };
+
+// controllers/doctorController.js
+
+exports.getAllSpecialists = async (req, res) => {
+  try {
+    // Fetch only users with the 'doctor' role
+    const doctors = await User.find({ role: 'doctor' })
+      .select('name email specializations availability status')
+      .sort({ name: 1 });
+
+    res.status(200).json({
+      success: true,
+      count: doctors.length,
+      data: doctors
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};

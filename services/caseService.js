@@ -6,7 +6,9 @@ const expo = new Expo();
 
 class CaseService {
   /**
-   * Logic to transition case from UNASSIGNED to PENDING_DOCTOR
+   * 🟢 ASSIGN TO SPECIALIST
+   * Transitions case from UNASSIGNED to PENDING_DOCTOR.
+   * Logs history and notifies the specific doctor.
    */
   async assignCaseToSpecialist(caseId, doctorId, assignedBy, note) {
     const updatedCase = await ReviewCase.findByIdAndUpdate(
@@ -18,32 +20,70 @@ class CaseService {
           assignmentHistory: { 
             from: assignedBy, 
             to: doctorId, 
-            note: note || "Assigned for specialist review" 
+            note: note || "Assigned for specialist review",
+            timestamp: new Date()
           } 
         }
       },
       { new: true }
-    ).populate('patientId');
+    ).populate('patientId', 'name');
 
     if (!updatedCase) throw new Error("Medical case not found");
 
-    // Trigger notification to the specific doctor
+    // 🔔 Trigger notification to the specific doctor
     await this.sendTargetedPush(doctorId, {
       title: 'New Case Assigned 🩺',
-      body: `You have been assigned ${updatedCase.patientId?.name}'s medical review.`,
-      data: { caseId: updatedCase._id.toString(), screen: 'doctor-review' }
+      body: `You have been assigned ${updatedCase.patientId?.name || 'a patient'}'s medical review.`,
+      data: { 
+        caseId: updatedCase._id.toString(), 
+        type: 'NEW_ASSIGNMENT',
+        screen: 'doctor-review' 
+      }
     });
 
     return updatedCase;
   }
 
   /**
-   * Generic helper for sending push notifications using Expo's chunking logic
+   * 👑 CMO SELF-ASSIGN
+   * Moves the case to the CMO's personal worklist.
+   * Bypasses push notification (since the CMO is already in-app).
+   */
+  async selfAssignCMO(caseId, cmoId) {
+    const updatedCase = await ReviewCase.findByIdAndUpdate(
+      caseId,
+      {
+        assignedTo: cmoId,
+        status: 'PENDING_DOCTOR',
+        $push: { 
+          assignmentHistory: { 
+            from: cmoId, 
+            to: cmoId, 
+            note: "CMO self-assigned for direct review.",
+            timestamp: new Date()
+          } 
+        }
+      },
+      { new: true }
+    );
+
+    if (!updatedCase) throw new Error("Medical case not found");
+    return updatedCase;
+  }
+
+  /**
+   * 📢 PUSH NOTIFICATION HELPER
+   * Handles Expo token verification and chunked delivery.
    */
   async sendTargetedPush(userId, { title, body, data }) {
     try {
       const user = await User.findById(userId);
-      if (!user || !user.pushToken || !Expo.isExpoPushToken(user.pushToken)) return;
+      
+      // Safety: Only proceed if user exists and has a valid Expo token
+      if (!user || !user.pushToken || !Expo.isExpoPushToken(user.pushToken)) {
+        console.log(`Skipping push: User ${userId} has no valid Expo token.`);
+        return;
+      }
 
       const messages = [{
         to: user.pushToken,
@@ -54,12 +94,18 @@ class CaseService {
         priority: 'high'
       }];
 
+      // Expo requires chunking for larger lists, but we use it here for robustness
       let chunks = expo.chunkPushNotifications(messages);
       for (let chunk of chunks) {
-        await expo.sendPushNotificationsAsync(chunk);
+        try {
+          await expo.sendPushNotificationsAsync(chunk);
+          console.log(`Push successfully sent to user: ${userId}`);
+        } catch (error) {
+          console.error("Expo Chunk Delivery Error:", error);
+        }
       }
     } catch (error) {
-      console.error("Push Service Error:", error);
+      console.error("General Push Service Error:", error);
     }
   }
 }

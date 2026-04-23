@@ -45,6 +45,8 @@ router.get('/case/:caseId', doctorCtrl.getCaseById);
  * @route   POST /api/doctor/submit-opinion
  */
 router.post('/submit-opinion', authorize('doctor', 'admin'), doctorCtrl.submitOpinion);
+router.get('/specialists', authorize('cmo', 'admin'), doctorCtrl.getAllSpecialists);
+router.post('/self-assign', authorize('cmo', 'admin'), caseCtrl.selfAssign);
 
 /**
  * @route   GET /api/doctor/history

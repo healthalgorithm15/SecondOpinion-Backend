@@ -7,8 +7,28 @@ const { Expo } = require('expo-server-sdk');
 const expo = new Expo();
 
 /**
+ * 🟢 GET ALL SPECIALISTS (For CMO Dropdown)
+ * Fetches real users with the 'doctor' role.
+ */
+exports.getAllSpecialists = async (req, res) => {
+  try {
+    // Only fetch users who are registered as specialists
+    const doctors = await User.find({ role: 'doctor' })
+      .select('name email specializations status')
+      .sort({ name: 1 });
+
+    res.status(200).json({ 
+      success: true, 
+      count: doctors.length, 
+      data: doctors 
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+/**
  * 🟡 START ANALYSIS
- * Triggered manually if needed, or automatically after payment/submission.
  */
 exports.startCaseAnalysis = async (req, res) => {
   try {
@@ -19,7 +39,6 @@ exports.startCaseAnalysis = async (req, res) => {
       assignedTo: null 
     });
 
-    // Background Execution: AI Service handles text extraction and logic
     aiService.analyzeReports(caseId).catch(err => {
         console.error(`CRITICAL: Background AI Analysis failed for ${caseId}:`, err);
     });
@@ -32,7 +51,6 @@ exports.startCaseAnalysis = async (req, res) => {
 
 /**
  * 🟢 NOTIFY CMO: AI Analysis Complete
- * Moves status to UNASSIGNED so CMO can assign a specialist.
  */
 exports.notifyDoctorCaseReady = async (caseId) => {
   try {
@@ -44,7 +62,6 @@ exports.notifyDoctorCaseReady = async (caseId) => {
 
     if (!updatedCase) return;
     
-    // Socket Logic: Live dashboard updates
     if (global.io) {
       global.io.emit('caseStatusUpdate', { 
         caseId: updatedCase._id, 
@@ -59,7 +76,6 @@ exports.notifyDoctorCaseReady = async (caseId) => {
       });
     }
 
-    // Notify CMOs via Push Notifications
     const cmos = await User.find({ role: 'cmo', pushToken: { $ne: null } });
     let messages = [];
 
@@ -88,6 +104,7 @@ exports.notifyDoctorCaseReady = async (caseId) => {
 
 /**
  * 🟠 ASSIGN CASE (CMO/Admin ONLY)
+ * Updates status to PENDING_DOCTOR and notifies the doctor.
  */
 exports.assignCase = async (req, res) => {
   try {
@@ -97,6 +114,7 @@ exports.assignCase = async (req, res) => {
       return res.status(403).json({ success: false, message: "Unauthorized: CMO access required" });
     }
 
+    // Update case in DB via service
     const updatedCase = await caseService.assignCaseToSpecialist(
       caseId, 
       doctorId, 
@@ -104,27 +122,35 @@ exports.assignCase = async (req, res) => {
       note
     );
 
+    // 🔔 Notify the assigned Doctor
+    const doctor = await User.findById(doctorId);
+    if (doctor?.pushToken && Expo.isExpoPushToken(doctor.pushToken)) {
+      await expo.sendPushNotificationsAsync([{
+        to: doctor.pushToken,
+        sound: 'default',
+        title: 'New Case Assigned 🩺',
+        body: `You have been assigned a new case review for ${updatedCase.patientId?.name || 'a patient'}.`,
+        data: { caseId: caseId.toString(), type: 'NEW_ASSIGNMENT', screen: 'doctor-case-detail' },
+        priority: 'high'
+      }]);
+    }
+
     res.status(200).json({ success: true, data: updatedCase });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 };
 
-// ... [Keep all other imports and exports as they were]
-
+/**
+ * 🟢 GET PENDING CASES
+ */
 exports.getDoctorCases = async (req, res) => {
   try {
-    // 🔍 Check exactly what the backend sees for debugging
-    console.log("DEBUG: User Role from Token:", req.user?.role);
-    
     let query = {};
     const role = req.user?.role ? req.user.role.toLowerCase() : 'unknown';
-    
-    // 🟢 CHECK: Does the frontend explicitly request the CMO view?
     const isCmoView = req.query.view === 'all';
 
     if (isCmoView || role === 'cmo' || role === 'admin') {
-      // Return all cases requiring CMO attention
       query = { 
         status: { 
           $in: [       
@@ -137,7 +163,6 @@ exports.getDoctorCases = async (req, res) => {
         } 
       };
     } else {
-      // Specialist view: Only cases specifically assigned to them
       query = { assignedTo: req.user._id, status: 'PENDING_DOCTOR' };
     }
 
@@ -146,18 +171,11 @@ exports.getDoctorCases = async (req, res) => {
       .select('+patientNote') 
       .sort({ createdAt: -1 });
 
-    res.status(200).json({ 
-      success: true, 
-      count: cases.length, 
-      data: cases 
-    });
+    res.status(200).json({ success: true, count: cases.length, data: cases });
   } catch (error) {
-    console.error("GET_DOCTOR_CASES_ERROR:", error);
     res.status(500).json({ success: false, error: error.message });
   }
 };
-
-
 
 /**
  * 🔵 NOTIFY PATIENT: Final Report Published
@@ -181,7 +199,7 @@ exports.notifyPatientReportReady = async (caseId) => {
         to: patient.pushToken,
         sound: 'default',
         title: 'Medical Report Ready! ✅',
-        body: `Hi ${patient.name.split(' ')[0]}, your specialist review is now available for download.`,
+        body: `Hi ${patient.name.split(' ')[0]}, your specialist review is now available.`,
         data: { caseId: updatedCase._id.toString(), type: 'REPORT_READY', screen: 'case-summary' },
         priority: 'high'
       };
@@ -192,9 +210,8 @@ exports.notifyPatientReportReady = async (caseId) => {
   }
 };
 
-
 /**
- * 📢 NOTIFY CMO: Specialist has submitted their review
+ * 📢 NOTIFY CMO: Specialist submitted review
  */
 exports.notifyCMOReviewReady = async (caseId) => {
   try {
@@ -222,7 +239,6 @@ exports.notifyCMOReviewReady = async (caseId) => {
 
 /**
  * 🏁 FINAL STEP: CMO APPROVAL & EDIT
- * Finalizes the case, allowing the CMO to refine the doctor's recommendations.
  */
 exports.cmoFinalApproval = async (req, res) => {
   try {
@@ -238,7 +254,6 @@ exports.cmoFinalApproval = async (req, res) => {
       'doctorOpinion.approvedAt': new Date()
     };
 
-    // Apply CMO overrides if provided
     if (updatedVerdict) updateData['doctorOpinion.finalVerdict'] = updatedVerdict;
     if (updatedRecommendations) updateData['doctorOpinion.recommendations'] = updatedRecommendations;
     if (cmoPrivateNote) updateData['doctorOpinion.cmoPrivateNote'] = cmoPrivateNote;
@@ -249,20 +264,25 @@ exports.cmoFinalApproval = async (req, res) => {
       { new: true }
     ).populate('patientId');
 
-    if (!updatedCase) {
-      return res.status(404).json({ success: false, message: "Case not found." });
-    }
-
-    // Publish results to patient
     await exports.notifyPatientReportReady(caseId);
 
     res.status(200).json({ 
       success: true, 
-      message: "Report finalized and published to patient vault.",
+      message: "Report finalized and published.",
       data: updatedCase 
     });
   } catch (error) {
-    console.error("CMO Approval Error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// Inside caseController.js
+exports.selfAssign = async (req, res) => {
+  try {
+    const { caseId } = req.body;
+    const updatedCase = await caseService.selfAssignCMO(caseId, req.user._id);
+    res.status(200).json({ success: true, data: updatedCase });
+  } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 };
