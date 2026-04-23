@@ -20,6 +20,7 @@ const ReviewCaseSchema = new mongoose.Schema({
   status: { 
     type: String, 
     enum: ['AI_PROCESSING', 
+      'PENDING',
       'UNASSIGNED',          // Waiting for CMO to assign
       'PENDING_DOCTOR',      // Assigned to a Specialist
       'PENDING_CMO_APPROVAL', // Specialist finished, waiting for CMO sign-off 🟢 NEW

@@ -110,26 +110,31 @@ exports.assignCase = async (req, res) => {
   }
 };
 
-/**
- * 🔍 GET DOCTOR/CMO CASES
- * Dynamically filters based on role and assignment.
- */
 exports.getDoctorCases = async (req, res) => {
   try {
     let query = {};
     const role = req.user.role.toLowerCase();
 
     if (role === 'cmo' || role === 'admin') {
-      // CMOs see everything requiring action: New, In-Progress, and Awaiting Approval
-      query = { status: { $in: ['UNASSIGNED', 'PENDING_DOCTOR', 'PENDING_CMO_APPROVAL'] } };
+      // 🟢 ADD 'AI_PROCESSING' and 'PENDING' to the list
+      query = { 
+        status: { 
+          $in: [
+            'PENDING',           // Initial submission
+            'AI_PROCESSING',     // Currently analyzing
+            'UNASSIGNED',        // AI done, needs specialist
+            'PENDING_DOCTOR',    // Assigned to Specialist
+            'PENDING_CMO_APPROVAL' // Specialist done, needs CMO sign-off
+          ] 
+        } 
+      };
     } else {
-      // Specialists only see cases assigned to them
       query = { assignedTo: req.user._id, status: 'PENDING_DOCTOR' };
     }
 
     const cases = await ReviewCase.find(query)
       .populate('patientId', 'name email')
-      .select('+patientNote') // Ensure clinical context is included
+      .select('+patientNote') 
       .sort({ createdAt: -1 });
 
     res.status(200).json({ success: true, data: cases });
