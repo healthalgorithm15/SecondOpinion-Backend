@@ -110,28 +110,34 @@ exports.assignCase = async (req, res) => {
   }
 };
 
+// ... [Keep all other imports and exports as they were]
+
 exports.getDoctorCases = async (req, res) => {
   try {
-
-    console.log("DEBUG: Raw Role from Token:", req.user.role);
-    console.log("DEBUG: User ID:", req.user._id);
+    // 🔍 Check exactly what the backend sees for debugging
+    console.log("DEBUG: User Role from Token:", req.user?.role);
+    
     let query = {};
-    const role = req.user.role.toLowerCase();
+    const role = req.user?.role ? req.user.role.toLowerCase() : 'unknown';
+    
+    // 🟢 CHECK: Does the frontend explicitly request the CMO view?
+    const isCmoView = req.query.view === 'all';
 
-    if (role === 'cmo' || role === 'admin') {
-      // 🟢 ADD 'AI_PROCESSING' and 'PENDING' to the list
+    if (isCmoView || role === 'cmo' || role === 'admin') {
+      // Return all cases requiring CMO attention
       query = { 
         status: { 
-          $in: [
-            'PENDING',           // Initial submission
-            'AI_PROCESSING',     // Currently analyzing
-            'UNASSIGNED',        // AI done, needs specialist
-            'PENDING_DOCTOR',    // Assigned to Specialist
-            'PENDING_CMO_APPROVAL' // Specialist done, needs CMO sign-off
+          $in: [       
+            'PENDING',           
+            'AI_PROCESSING',     
+            'UNASSIGNED',        
+            'PENDING_DOCTOR',    
+            'PENDING_CMO_APPROVAL' 
           ] 
         } 
       };
     } else {
+      // Specialist view: Only cases specifically assigned to them
       query = { assignedTo: req.user._id, status: 'PENDING_DOCTOR' };
     }
 
@@ -140,11 +146,18 @@ exports.getDoctorCases = async (req, res) => {
       .select('+patientNote') 
       .sort({ createdAt: -1 });
 
-    res.status(200).json({ success: true, data: cases });
+    res.status(200).json({ 
+      success: true, 
+      count: cases.length, 
+      data: cases 
+    });
   } catch (error) {
+    console.error("GET_DOCTOR_CASES_ERROR:", error);
     res.status(500).json({ success: false, error: error.message });
   }
 };
+
+
 
 /**
  * 🔵 NOTIFY PATIENT: Final Report Published

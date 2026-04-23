@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { protect, authorize } = require('../middleware/authMiddleware'); 
 const doctorCtrl = require('../controllers/doctorController');
-const caseCtrl = require('../controllers/caseController');
+const caseCtrl = require('../controllers/caseController'); 
 
 /**
  * 🛡️ Role-Based Access Control Middleware
@@ -19,15 +19,16 @@ const authorizeMedicalStaff = (req, res, next) => {
 };
 
 // --- PROTECT ALL ROUTES ---
+// Applying 'protect' here once ensures req.user is available for every route below
 router.use(protect);                
 router.use(authorizeMedicalStaff);  
 
 /**
  * @route   GET /api/doctor/pending-cases
  * @desc    CMO sees all, Doctor sees assigned.
- * 🟢 FIXED: Points to doctorCtrl.getPendingCases
  */
-router.get('/pending-cases', doctorCtrl.getPendingCases);
+// 🟢 FIXED: Using the correct variable 'caseCtrl' and removed redundant 'protect' call
+router.get('/pending-cases', caseCtrl.getDoctorCases);
 
 /**
  * @route   PUT /api/doctor/assign
