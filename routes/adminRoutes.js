@@ -17,7 +17,7 @@ router.use(authorize('admin'));
  * @route   POST /api/admin/create-doctor
  * @desc    Onboard new specialist doctors to the platform
  */
-router.post('/create-doctor', adminController.createDoctor);
+router.post('/create-doctor', adminController.createMedicalStaff);
 
 /**
  * @route   GET /api/admin/users

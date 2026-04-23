@@ -4,7 +4,7 @@ const router = express.Router();
 // 1. Import Controllers
 const { register, verifyEmail, completeOnboarding } = require('../controllers/registerController');
 const { login, verifyOTP, googleLogin } = require('../controllers/loginController');
-const { forgotPassword, resetPassword, updatePassword } = require('../controllers/passwordController');
+const { forgotPassword, resetPassword, updatePassword, resendOTP } = require('../controllers/passwordController');
 const { getMe, updateProfile, logout, updatePushToken } = require('../controllers/sessionController'); // 🟢 Added updatePushToken
 const { getDashboard } = require('../controllers/patientController');
 
@@ -18,7 +18,7 @@ router.post('/login', authLimiter, login);
 router.post('/google', googleLogin);
 router.post('/verify-otp', apiLimiter, verifyOTP);
 router.post('/forgot-password', authLimiter, forgotPassword);
-router.post('/resend-otp', authLimiter, forgotPassword);
+router.post('/resend-otp', authLimiter, resendOTP);
 router.post('/reset-password/:token', authLimiter, resetPassword);
 router.post('/reset-password', authLimiter, resetPassword);
 
