@@ -26,7 +26,7 @@ exports.createMedicalStaff = async (req, res) => {
                     <p style="margin: 0;"><strong>Email:</strong> ${email}</p>
                     <p style="margin: 5px 0 0 0;"><strong>Temporary Password:</strong> <span style="color: #d9534f; font-weight: bold;">${rawTempPassword}</span></p>
                 </div>
-                <p>Please use these credentials to log in to the PramanAI mobile app. You will be prompted to set a permanent password upon your first login.</p>
+                <p>Please use the credentials to log in to the PramanAI mobile app. You will be prompted to set a permanent password upon your first login.</p>
                 <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;" />
                 <p style="font-size: 12px; color: #777;">This is an automated message. Please do not reply to this email.</p>
             </div>
