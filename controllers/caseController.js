@@ -112,6 +112,9 @@ exports.assignCase = async (req, res) => {
 
 exports.getDoctorCases = async (req, res) => {
   try {
+
+    console.log("DEBUG: Raw Role from Token:", req.user.role);
+    console.log("DEBUG: User ID:", req.user._id);
     let query = {};
     const role = req.user.role.toLowerCase();
 
