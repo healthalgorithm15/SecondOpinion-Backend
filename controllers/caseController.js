@@ -102,19 +102,15 @@ exports.notifyDoctorCaseReady = async (caseId) => {
   }
 };
 
-/**
- * 🟠 ASSIGN CASE (CMO/Admin ONLY)
- * Updates status to PENDING_DOCTOR and notifies the doctor.
- */
 exports.assignCase = async (req, res) => {
   try {
-    const { caseId, doctorId, note } = req.body;
+    const { caseId, doctorId, note } = req.body; // Frontend sends specialistId, mapping to doctorId
 
     if (!['cmo', 'admin'].includes(req.user.role)) {
       return res.status(403).json({ success: false, message: "Unauthorized: CMO access required" });
     }
 
-    // Update case in DB via service
+    // This one line now handles DB update, History, and the Push Notification!
     const updatedCase = await caseService.assignCaseToSpecialist(
       caseId, 
       doctorId, 
@@ -122,21 +118,9 @@ exports.assignCase = async (req, res) => {
       note
     );
 
-    // 🔔 Notify the assigned Doctor
-    const doctor = await User.findById(doctorId);
-    if (doctor?.pushToken && Expo.isExpoPushToken(doctor.pushToken)) {
-      await expo.sendPushNotificationsAsync([{
-        to: doctor.pushToken,
-        sound: 'default',
-        title: 'New Case Assigned 🩺',
-        body: `You have been assigned a new case review for ${updatedCase.patientId?.name || 'a patient'}.`,
-        data: { caseId: caseId.toString(), type: 'NEW_ASSIGNMENT', screen: 'doctor-case-detail' },
-        priority: 'high'
-      }]);
-    }
-
     res.status(200).json({ success: true, data: updatedCase });
   } catch (error) {
+    console.error("Assignment Error:", error);
     res.status(500).json({ success: false, error: error.message });
   }
 };

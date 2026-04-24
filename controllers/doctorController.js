@@ -1,5 +1,6 @@
 const ReviewCase = require('../models/ReviewCase');
 const MedicalRecord = require('../models/MedicalRecord');
+const User = require('../models/User');
 const mongoose = require('mongoose');
 
 /**
@@ -8,19 +9,21 @@ const mongoose = require('mongoose');
 const caseController = require('./caseController'); 
 
 /**
- * @desc    Get all cases awaiting specialist review
+ * @desc    Get all cases awaiting action (Worklist)
  * @route   GET /api/doctor/pending-cases
- * @access  Private (Doctor & CMO)
  */
 exports.getPendingCases = async (req, res) => {
   try {
-    // 🟢 DYNAMIC QUERY: CMO sees the global queue, Doctor sees their assignments
-    let query = { status: 'PENDING_DOCTOR' };
+    let query = {};
 
-    if (req.user.role === 'doctor') {
+    if (req.user.role === 'cmo') {
+      // CMO sees everything that isn't finished yet
+      query.status = { $in: ['UNASSIGNED', 'AI_PROCESSING', 'PENDING_DOCTOR', 'PENDING_CMO_APPROVAL'] };
+    } else {
+      // Specialists only see what is specifically assigned to them
+      query.status = 'PENDING_DOCTOR';
       query.assignedTo = req.user._id;
     } 
-    // CMO role does not add the assignedTo filter, allowing a full view
 
     const cases = await ReviewCase.find(query)
       .select('status aiAnalysis createdAt patientId recordIds assignedTo') 
@@ -32,7 +35,6 @@ exports.getPendingCases = async (req, res) => {
       .sort({ 'aiAnalysis.riskLevel': -1, createdAt: 1 }) 
       .lean();
 
-    // Remove any null records in case a file was deleted but the reference remained
     const sanitizedCases = cases.map(c => ({
       ...c,
       recordIds: (c.recordIds || []).filter(r => r !== null)
@@ -192,11 +194,12 @@ exports.getDoctorHistory = async (req, res) => {
   }
 };
 
-// controllers/doctorController.js
-
+/**
+ * @desc    Fetch list of available specialists for assignment
+ * @route   GET /api/doctor/specialists
+ */
 exports.getAllSpecialists = async (req, res) => {
   try {
-    // Fetch only users with the 'doctor' role
     const doctors = await User.find({ role: 'doctor' })
       .select('name email specializations availability status')
       .sort({ name: 1 });
