@@ -34,7 +34,9 @@ router.get('/pending-cases', caseCtrl.getDoctorCases);
  * @route   PUT /api/doctor/assign
  * @desc    CMO assigns a case to a specific doctor
  */
-router.put('/assign', authorize('cmo', 'admin'), caseCtrl.assignCase);
+
+// Change caseController to caseCtrl
+router.post('/assign-case', protect, caseCtrl.assignCase);
 
 /**
  * @route   GET /api/doctor/case/:caseId
