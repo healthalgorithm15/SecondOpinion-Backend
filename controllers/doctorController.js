@@ -152,6 +152,24 @@ exports.submitOpinion = async (req, res) => {
   }
 };
 
+// controller/doctorController.js
+export const cmoApproveCase = async (req, res) => {
+  const { caseId, updatedVerdict, updatedRecommendations, cmoPrivateNote } = req.body;
+
+  const updatedCase = await Case.findByIdAndUpdate(caseId, {
+    status: 'published',
+    cmoOpinion: {
+      updatedVerdict,
+      updatedRecommendations,
+      cmoPrivateNote,
+      publishedAt: new Date(),
+      cmoId: req.user.id // ID of the CMO logged in
+    }
+  }, { new: true });
+
+  res.status(200).json({ success: true, data: updatedCase });
+};
+
 /**
  * @desc    Get clinical history (Paginated)
  * @route   GET /api/doctor/history

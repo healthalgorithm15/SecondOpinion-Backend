@@ -65,7 +65,16 @@ const ReviewCaseSchema = new mongoose.Schema({
     approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     approvedAt: Date,
     cmoPrivateNote: String
+  },
+
+  cmoOpinion: {
+    updatedVerdict: String,
+    updatedRecommendations: String,
+    cmoPrivateNote: String,
+    publishedAt: Date,
+    cmoId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
   }
+
 }, { timestamps: true }); // Automatically handles createdAt and updatedAt
 
 module.exports = mongoose.model('ReviewCase', ReviewCaseSchema);
