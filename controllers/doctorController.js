@@ -20,9 +20,11 @@ exports.getPendingCases = async (req, res) => {
       // CMO sees everything that isn't finished yet
       query.status = { $in: ['UNASSIGNED', 'AI_PROCESSING', 'PENDING_DOCTOR', 'PENDING_CMO_APPROVAL'] };
     } else {
-      // Specialists only see what is specifically assigned to them
-      query.status = 'PENDING_DOCTOR';
-      query.assignedTo = req.user._id;
+      query.assignedTo = new mongoose.Types.ObjectId(req.user._id);
+  query.status = { $in: ['PENDING_DOCTOR', 'ASSIGNED'] };
+  
+  console.log("Searching for Specialist ID:", query.assignedTo); // Log this to your terminal!
+      //query.assignedTo = req.user._id;
     } 
 
     const cases = await ReviewCase.find(query)
