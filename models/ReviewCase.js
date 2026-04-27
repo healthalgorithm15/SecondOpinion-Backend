@@ -24,7 +24,8 @@ const ReviewCaseSchema = new mongoose.Schema({
       'UNASSIGNED',          // Waiting for CMO to assign
       'PENDING_DOCTOR',      // Assigned to a Specialist
       'PENDING_CMO_APPROVAL', // Specialist finished, waiting for CMO sign-off 🟢 NEW
-      'COMPLETED',           // CMO approved, patient can see it
+      'COMPLETED',   
+      'published',        // CMO approved, patient can see it
       'CANCELLED'],
     default: 'AI_PROCESSING' 
   },
