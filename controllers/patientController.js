@@ -220,17 +220,24 @@ exports.getCaseStatus = async (req, res) => {
   try {
     const patientCase = await ReviewCase.findById(req.params.caseId)
       .populate('recordIds', 'title category reportDate')
-      .populate('doctorId', 'name specialization')
+      // Changed to 'assignedTo' or 'doctorId' based on your model
+      .populate('assignedTo', 'name specialization') 
       .lean();
 
     if (!patientCase || patientCase.patientId.toString() !== req.user._id.toString()) {
       return res.status(403).json({ success: false, message: "Access denied." });
     }
 
+    // Ensure doctorOpinion stays visible if published
+    const isReady = ['COMPLETED', 'published'].includes(patientCase.status);
+    if (!isReady) {
+      delete patientCase.doctorOpinion;
+    }
+
     const uiSteps = { 
       docsUploaded: true, 
       aiCompleted: !['AI_PROCESSING'].includes(patientCase.status), 
-      doctorStarted: !!patientCase.doctorId || patientCase.status === 'COMPLETED' 
+      doctorStarted: !!patientCase.assignedTo || isReady 
     };
 
     res.status(200).json({ success: true, data: { ...patientCase, uiSteps } });
@@ -295,12 +302,12 @@ exports.getReviewHistory = async (req, res) => {
       .lean();
 
     // 🛡️ SECURITY GATE: Ensure internal opinions are hidden until COMPLETED
-    const sanitizedHistory = cases.map(c => {
-      if (c.status !== 'COMPLETED') {
-        delete c.doctorOpinion;
-      }
-      return c;
-    });
+   const sanitizedHistory = cases.map(c => {
+  if (!['COMPLETED', 'published'].includes(c.status)) {
+    delete c.doctorOpinion;
+  }
+  return c;
+});
 
     res.status(200).json({ success: true, data: sanitizedHistory });
   } catch (error) {
@@ -324,9 +331,9 @@ exports.getPatientCaseById = async (req, res) => {
     const responseData = caseData.toObject();
     
     // 🛡️ SECURITY GATE: Strictly hide the opinion unless finalized by CMO (status COMPLETED)
-    if (responseData.status !== 'COMPLETED') {
-      delete responseData.doctorOpinion; 
-    }
+    if (!['COMPLETED', 'published'].includes(responseData.status)) {
+  delete responseData.doctorOpinion; 
+}
     
     res.status(200).json({ success: true, data: responseData });
   } catch (error) {
