@@ -153,7 +153,6 @@ exports.cmoApproveCase = async (req, res) => {
   try {
     const { caseId, updatedVerdict, updatedRecommendations, cmoPrivateNote } = req.body;
 
-    // Check if user is actually a CMO
     if (req.user.role !== 'cmo') {
       return res.status(403).json({ success: false, message: "Only a CMO can perform this action." });
     }
@@ -161,7 +160,8 @@ exports.cmoApproveCase = async (req, res) => {
     const updatedCase = await ReviewCase.findByIdAndUpdate(
       caseId, 
       {
-        status: 'published', // Updated status to mark as final
+        status: 'published', 
+        // We keep cmoOpinion separate so we know who did the final check
         cmoOpinion: {
           updatedVerdict,
           updatedRecommendations,
@@ -171,11 +171,17 @@ exports.cmoApproveCase = async (req, res) => {
         }
       }, 
       { new: true }
-    );
+    )
+    .populate('patientId', 'name')
+    .populate('doctorId', 'name specializations') // 🔍 CRITICAL: Populate the Doctor's name
+    .lean();
 
     if (!updatedCase) {
       return res.status(404).json({ success: false, message: "Case not found." });
     }
+
+    // Trigger notification to patient (as you had in caseController)
+    caseController.notifyPatientReportReady(caseId);
 
     res.status(200).json({ 
       success: true, 
@@ -183,7 +189,6 @@ exports.cmoApproveCase = async (req, res) => {
       data: updatedCase 
     });
   } catch (error) {
-    console.error("❌ CMO Approval Error:", error);
     res.status(500).json({ success: false, message: "Failed to approve case." });
   }
 };

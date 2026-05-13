@@ -17,7 +17,7 @@ const seedSuperAdmin = async () => {
     const superAdmin = new User({
       name: 'System Administrator',
       email: adminEmail,
-      password: 'AdminPassword!', // 🟢 PLAIN TEXT HERE
+      password: 'AdminPassword!123', // 🟢 PLAIN TEXT HERE
       role: 'admin',
       isVerified: true,
       isEmailVerified: true,

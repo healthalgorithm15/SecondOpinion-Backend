@@ -232,13 +232,27 @@ exports.cmoFinalApproval = async (req, res) => {
       return res.status(403).json({ success: false, message: "CMO authority required." });
     }
 
+    // 1. Fetch the existing case first to make sure we have the Doctor's original data
+    const existingCase = await ReviewCase.findById(caseId);
+    if (!existingCase) return res.status(404).json({ success: false, message: "Case not found" });
+
     const updateData = {
       status: 'COMPLETED',
       'doctorOpinion.approvedBy': req.user._id,
-      'doctorOpinion.approvedAt': new Date()
+      'doctorOpinion.approvedAt': new Date(),
+      // Ensure we keep the specialist ID attached to the opinion
+      'doctorOpinion.specialistId': existingCase.assignedTo 
     };
 
-    if (updatedVerdict) updateData['doctorOpinion.finalVerdict'] = updatedVerdict;
+    // 2. If the CMO provides an edit, we save it as the 'finalVerdict' 
+    // but we must ensure the 'specialistVerdict' remains untouched in the DB
+    if (updatedVerdict) {
+        updateData['doctorOpinion.finalVerdict'] = updatedVerdict;
+    } else {
+        // Fallback: If CMO didn't edit it, the final is the doctor's original
+        updateData['doctorOpinion.finalVerdict'] = existingCase.doctorOpinion?.specialistVerdict;
+    }
+
     if (updatedRecommendations) updateData['doctorOpinion.recommendations'] = updatedRecommendations;
     if (cmoPrivateNote) updateData['doctorOpinion.cmoPrivateNote'] = cmoPrivateNote;
 
@@ -246,7 +260,7 @@ exports.cmoFinalApproval = async (req, res) => {
       caseId, 
       { $set: updateData }, 
       { new: true }
-    ).populate('patientId');
+    ).populate('patientId assignedTo'); // Populate assignedTo to get Doctor's name
 
     await exports.notifyPatientReportReady(caseId);
 
