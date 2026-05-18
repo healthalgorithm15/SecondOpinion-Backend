@@ -137,7 +137,7 @@ exports.getDoctorCases = async (req, res) => {
     if (isCmoView || role === 'cmo' || role === 'admin') {
       query = { 
         status: { 
-          $in: [       
+          $in: [      
             'PENDING',           
             'AI_PROCESSING',     
             'UNASSIGNED',        
@@ -241,26 +241,32 @@ exports.cmoFinalApproval = async (req, res) => {
       'doctorOpinion.approvedBy': req.user._id,
       'doctorOpinion.approvedAt': new Date(),
       // Ensure we keep the specialist ID attached to the opinion
-      'doctorOpinion.specialistId': existingCase.assignedTo 
+      'doctorOpinion.specialistId': existingCase.assignedTo || existingCase.doctorId 
     };
 
     // 2. If the CMO provides an edit, we save it as the 'finalVerdict' 
-    // but we must ensure the 'specialistVerdict' remains untouched in the DB
+    // 🛠️ FIX: Changed fallback target from 'specialistVerdict' to 'finalVerdict' to avoid wiping doctor notes
     if (updatedVerdict) {
         updateData['doctorOpinion.finalVerdict'] = updatedVerdict;
     } else {
-        // Fallback: If CMO didn't edit it, the final is the doctor's original
-        updateData['doctorOpinion.finalVerdict'] = existingCase.doctorOpinion?.specialistVerdict;
+        // Fallback: If CMO didn't edit it, preserve the doctor's original text securely
+        updateData['doctorOpinion.finalVerdict'] = existingCase.doctorOpinion?.finalVerdict;
     }
 
-    if (updatedRecommendations) updateData['doctorOpinion.recommendations'] = updatedRecommendations;
+    if (updatedRecommendations) {
+        updateData['doctorOpinion.recommendations'] = updatedRecommendations;
+    } else {
+        // Fallback for recommendations object
+        updateData['doctorOpinion.recommendations'] = existingCase.doctorOpinion?.recommendations;
+    }
+
     if (cmoPrivateNote) updateData['doctorOpinion.cmoPrivateNote'] = cmoPrivateNote;
 
     const updatedCase = await ReviewCase.findByIdAndUpdate(
       caseId, 
       { $set: updateData }, 
       { new: true }
-    ).populate('patientId assignedTo'); // Populate assignedTo to get Doctor's name
+    ).populate('patientId assignedTo doctorId'); // Fully populate reference objects
 
     await exports.notifyPatientReportReady(caseId);
 
