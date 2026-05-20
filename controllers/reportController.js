@@ -5,17 +5,36 @@ const ReviewCase = require('../models/ReviewCase');
  * 🤖 AI ANALYSIS PDF (Preliminary Clinical Context)
  */
 exports.getAIAnalysisPDF = async (req, res) => {
+    const { caseId } = req.params;
+    console.log(`\n=== [PDF-AI START] Processing Case ID: ${caseId} ===`);
+    
     try {
-        const { caseId } = req.params; // 🛠️ FIXED: Matches route parameter name perfectly
         const caseData = await ReviewCase.findById(caseId);
 
-        if (!caseData) return res.status(404).json({ success: false, message: 'Case not found.' });
+        if (!caseData) {
+            console.error(`❌ [PDF-AI ERROR] Case not found in Database for ID: ${caseId}`);
+            return res.status(404).json({ success: false, message: 'Case not found.' });
+        }
+        
+        console.log(`✅ [PDF-AI DB MATCH] Document retrieved successfully. Risk Level: ${caseData.aiAnalysis?.riskLevel || 'N/A'}`);
 
         const doc = new PDFDocument({ size: 'LETTER', margin: 50 }); 
 
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `inline; filename=PramanAI_AI_Report_${caseId.slice(-6)}.pdf`);
+        
+        // Track byte stream output
+        let bytesWritten = 0;
+        doc.on('data', (chunk) => {
+            bytesWritten += chunk.length;
+        });
+
+        doc.on('end', () => {
+            console.log(`🏁 [PDF-AI STREAM FINISHED] Generated successfully. Total File Size: ${(bytesWritten / 1024).toFixed(2)} KB`);
+        });
+
         doc.pipe(res);
+        console.log(`📥 [PDF-AI PIPE] Data stream successfully attached to Express response object.`);
 
         // --- 1. HEADER & CASE INFO ---
         doc.rect(0, 0, 612, 100).fill('#F0F9F8'); 
@@ -82,7 +101,7 @@ exports.getAIAnalysisPDF = async (req, res) => {
 
         doc.end();
     } catch (err) {
-        console.error("AI PDF Error:", err);
+        console.error("❌ [PDF-AI CRITICAL FAULT]:", err);
         if (!res.headersSent) res.status(500).send('Error generating AI PDF');
     }
 };
@@ -91,14 +110,24 @@ exports.getAIAnalysisPDF = async (req, res) => {
  * 👨‍⚕️ 👑 UNIFIED CLINICAL VERDICT PDF (Doctor Review + CMO Verification Bundle)
  */
 exports.getDoctorReviewPDF = async (req, res) => {
+    const { caseId } = req.params;
+    console.log(`\n=== [PDF-FINAL START] Processing Case ID: ${caseId} ===`);
+    
     try {
-        const { caseId } = req.params; // 🛠️ FIXED: Linked parameter correctly
         const reviewData = await ReviewCase.findById(caseId)
             .populate('doctorId', 'name')
             .populate('assignedTo', 'name')
             .populate('cmoOpinion.approvedBy', 'name');
 
-        if (!reviewData || reviewData.status !== 'COMPLETED') {
+        if (!reviewData) {
+            console.error(`❌ [PDF-FINAL ERROR] Case not found in Database for ID: ${caseId}`);
+            return res.status(404).json({ success: false, message: 'Case not found.' });
+        }
+        
+        console.log(`✅ [PDF-FINAL DB MATCH] Case entry loaded. Status: ${reviewData.status}`);
+
+        if (reviewData.status !== 'COMPLETED') {
+            console.warn(`⚠️ [PDF-FINAL WARNING] Attempted download on incomplete case. Status is currently: ${reviewData.status}`);
             return res.status(400).json({ success: false, message: 'Review package is not fully finalized yet.' });
         }
 
@@ -106,7 +135,19 @@ exports.getDoctorReviewPDF = async (req, res) => {
 
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `inline; filename=Official_Medical_Report_${caseId}.pdf`);
+
+        // Track byte stream output
+        let bytesWritten = 0;
+        doc.on('data', (chunk) => {
+            bytesWritten += chunk.length;
+        });
+
+        doc.on('end', () => {
+            console.log(`🏁 [PDF-FINAL STREAM FINISHED] Generated successfully. Total File Size: ${(bytesWritten / 1024).toFixed(2)} KB`);
+        });
+
         doc.pipe(res);
+        console.log(`📥 [PDF-FINAL PIPE] Data stream successfully attached to Express response object.`);
 
         // --- 1. PROFESSIONAL LETTERHEAD ---
         doc.fillColor('#4338CA').font('Helvetica-Bold').fontSize(26).text('Praman AI', { align: 'left' });
@@ -141,7 +182,7 @@ exports.getDoctorReviewPDF = async (req, res) => {
 
         doc.moveDown(3.5);
 
-        // --- 4. 👨‍⚕️ LAYER 2: PRIMARY SPECIALIST REVIEW (Hides beautifully if direct CMO bypass was utilized)
+        // --- 4. 👨‍⚕️ LAYER 2: PRIMARY SPECIALIST REVIEW ---
         const specialistName = reviewData.assignedTo?.name || reviewData.doctorId?.name;
         const specialistVerdict = reviewData.doctorOpinion?.finalVerdict;
 
@@ -152,17 +193,15 @@ exports.getDoctorReviewPDF = async (req, res) => {
             const specText = `Verdict:\n${specialistVerdict}\n\nClinical Roadmap:\n${reviewData.doctorOpinion?.recommendations || "Follow default therapeutic layout."}`;
             const specBoxHeight = doc.heightOfString(specText, { width: 480 });
 
-            // Wrap block onto next page if space is constricted
             if (doc.y + specBoxHeight > 700) doc.addPage();
 
             doc.rect(50, doc.y, 512, specBoxHeight + 20).fill('#F8FAFC');
             doc.fillColor('#334155').font('Helvetica').fontSize(11).text(specText, 65, doc.y + 10, { width: 480, lineGap: 3 });
         } else {
-            // CMO Bypass placeholder text
             doc.fillColor('#64748B').font('Helvetica-Oblique').fontSize(11).text('*Case directly accelerated to executive review layer. Specialist triage phase omitted.', { width: 512 });
         }
 
-        // --- 5. SECURE DIGITAL SIGNATURE FOOTER TRACKING ---
+        // --- 5. SECURE DIGITAL SIGNATURE FOOTER ---
         const bottomY = 710;
         doc.moveTo(50, bottomY).lineTo(562, bottomY).strokeColor('#E2E8F0').lineWidth(1).stroke();
         
@@ -171,7 +210,7 @@ exports.getDoctorReviewPDF = async (req, res) => {
 
         doc.end();
     } catch (err) {
-        console.error("Unified Report PDF Error:", err);
+        console.error("❌ [PDF-FINAL CRITICAL FAULT]:", err);
         if (!res.headersSent) res.status(500).send('Error generating joint verification bundle');
     }
 };
