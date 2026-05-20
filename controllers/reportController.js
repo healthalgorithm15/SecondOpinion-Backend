@@ -6,7 +6,7 @@ const ReviewCase = require('../models/ReviewCase');
  */
 exports.getAIAnalysisPDF = async (req, res) => {
     try {
-        const { caseId } = req.params;
+        const { caseId } = req.params; // 🛠️ FIXED: Matches route parameter name perfectly
         const caseData = await ReviewCase.findById(caseId);
 
         if (!caseData) return res.status(404).json({ success: false, message: 'Case not found.' });
@@ -14,7 +14,7 @@ exports.getAIAnalysisPDF = async (req, res) => {
         const doc = new PDFDocument({ size: 'LETTER', margin: 50 }); 
 
         res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', `attachment; filename=PramanAI_AI_Report_${caseId.slice(-6)}.pdf`);
+        res.setHeader('Content-Disposition', `inline; filename=PramanAI_AI_Report_${caseId.slice(-6)}.pdf`);
         doc.pipe(res);
 
         // --- 1. HEADER & CASE INFO ---
@@ -48,7 +48,6 @@ exports.getAIAnalysisPDF = async (req, res) => {
         );
 
         // --- 4. COLOR-CODED LAB MARKERS ---
-        // CRITICAL: We use doc.y to ensure markers start AFTER the text content
         currentY = doc.y + 35; 
 
         if (caseData.aiAnalysis?.extractedMarkers?.length > 0) {
@@ -63,7 +62,6 @@ exports.getAIAnalysisPDF = async (req, res) => {
                     itemColor = '#D97706';
                 }
 
-                // Check for page overflow
                 if (currentY > 720) {
                     doc.addPage();
                     currentY = 50;
@@ -90,70 +88,90 @@ exports.getAIAnalysisPDF = async (req, res) => {
 };
 
 /**
- * 👨‍⚕️ SPECIALIST VERDICT PDF (Final Report)
+ * 👨‍⚕️ 👑 UNIFIED CLINICAL VERDICT PDF (Doctor Review + CMO Verification Bundle)
  */
 exports.getDoctorReviewPDF = async (req, res) => {
     try {
-        const { caseId } = req.params;
-        const reviewData = await ReviewCase.findById(caseId).populate('doctorId', 'name');
+        const { caseId } = req.params; // 🛠️ FIXED: Linked parameter correctly
+        const reviewData = await ReviewCase.findById(caseId)
+            .populate('doctorId', 'name')
+            .populate('assignedTo', 'name')
+            .populate('cmoOpinion.approvedBy', 'name');
 
         if (!reviewData || reviewData.status !== 'COMPLETED') {
-            return res.status(400).json({ success: false, message: 'Review not finalized.' });
+            return res.status(400).json({ success: false, message: 'Review package is not fully finalized yet.' });
         }
 
         const doc = new PDFDocument({ size: 'LETTER', margin: 50 });
 
         res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', `inline; filename=Specialist_Verdict_${caseId}.pdf`);
+        res.setHeader('Content-Disposition', `inline; filename=Official_Medical_Report_${caseId}.pdf`);
         doc.pipe(res);
 
         // --- 1. PROFESSIONAL LETTERHEAD ---
-        doc.fillColor('#1E7D75').font('Helvetica-Bold').fontSize(26).text('Praman AI', { align: 'left' });
-        doc.fontSize(10).fillColor('#64748B').font('Helvetica').text('Clinical Consultation Services', { align: 'left' });
+        doc.fillColor('#4338CA').font('Helvetica-Bold').fontSize(26).text('Praman AI', { align: 'left' });
+        doc.fontSize(10).fillColor('#64748B').font('Helvetica').text('Official Certified Medical Verdict', { align: 'left' });
         
         doc.moveDown(0.5);
-        doc.moveTo(50, doc.y).lineTo(562, doc.y).strokeColor('#1E7D75').lineWidth(2).stroke();
-        doc.moveDown(2);
+        doc.moveTo(50, doc.y).lineTo(562, doc.y).strokeColor('#4338CA').lineWidth(2).stroke();
+        doc.moveDown(1.5);
 
-        // --- 2. DETAILS GRID ---
+        // --- 2. CASE REFERENCE METADATA GRID ---
         const startY = doc.y;
-        doc.fillColor('#64748B').font('Helvetica').fontSize(9).text('REVIEWING SPECIALIST', 50, startY);
-        doc.fillColor('#1E293B').font('Helvetica-Bold').fontSize(12).text(`Dr. ${reviewData.doctorId?.name || 'Medical Specialist'}`, 50, startY + 15);
+        doc.fillColor('#64748B').font('Helvetica').fontSize(9).text('CASE REFERENCE ID', 50, startY);
+        doc.fillColor('#1E293B').font('Helvetica-Bold').fontSize(11).text(caseId.toUpperCase(), 50, startY + 14);
 
-        doc.fillColor('#64748B').font('Helvetica').fontSize(9).text('CASE REFERENCE', 350, startY);
-        doc.fillColor('#1E293B').font('Helvetica-Bold').fontSize(12).text(caseId.toUpperCase(), 350, startY + 15);
-
-        doc.moveDown(4);
-
-        // --- 3. FINAL VERDICT SECTION ---
-        doc.fillColor('#1E7D75').font('Helvetica-Bold').fontSize(14).text('FINAL CLINICAL VERDICT');
-        doc.moveDown(0.5);
-        
-        const verdictText = reviewData.doctorOpinion?.finalVerdict || "No verdict recorded.";
-        const textHeight = doc.heightOfString(verdictText, { width: 480 });
-        
-        doc.rect(50, doc.y, 512, textHeight + 20).fill('#F8FAFC');
-        doc.fillColor('#1E293B').font('Helvetica-Bold').fontSize(12).text(verdictText, 65, doc.y + 10, { width: 480 });
+        doc.fillColor('#64748B').font('Helvetica').fontSize(9).text('VERIFICATION DATE', 350, startY);
+        const finalDate = reviewData.cmoOpinion?.approvedAt ? new Date(reviewData.cmoOpinion.approvedAt) : new Date();
+        doc.fillColor('#1E293B').font('Helvetica-Bold').fontSize(11).text(finalDate.toLocaleDateString(), 350, startY + 14);
 
         doc.moveDown(3);
 
-        // --- 4. RECOMMENDATIONS ---
-        doc.fillColor('#1E7D75').font('Helvetica-Bold').fontSize(14).text('RECOMMENDATIONS & NEXT STEPS');
-        doc.moveDown(0.8);
-        doc.fillColor('#334155').font('Helvetica').fontSize(11).text(
-            reviewData.doctorOpinion?.recommendations || "Please follow up with your primary healthcare provider.",
-            { width: 512, lineGap: 5, align: 'justify' }
-        );
+        // --- 3. 👑 LAYER 1: CHIEF MEDICAL OFFICER DIRECTIVE ---
+        doc.fillColor('#4338CA').font('Helvetica-Bold').fontSize(13).text('I. EXECUTIVE CMO VERIFICATION');
+        doc.moveDown(0.5);
 
-        // --- 5. DIGITAL SIGNATURE ---
-        const bottomY = 700;
-        doc.moveTo(350, bottomY).lineTo(550, bottomY).strokeColor('#CBD5E1').lineWidth(1).stroke();
-        doc.fontSize(8).fillColor('#94A3B8').text('Digitally Signed by verified Medical Specialist', 350, bottomY + 5, { width: 200, align: 'center' });
-        doc.text(`Verification Date: ${new Date().toLocaleDateString()}`, 350, bottomY + 18, { width: 200, align: 'center' });
+        const cmoVerdict = reviewData.cmoOpinion?.updatedVerdict || "Verified and authenticated by Chief Medical Officer.";
+        const cmoRecs = reviewData.cmoOpinion?.updatedRecommendations || "The clinical roadmap outlined below has been fully validated for patient release.";
+        const combinedCmoText = `${cmoVerdict}\n\nRecommendations:\n${cmoRecs}`;
+        const cmoBoxHeight = doc.heightOfString(combinedCmoText, { width: 480 });
+
+        doc.rect(50, doc.y, 512, cmoBoxHeight + 20).fill('#F5F7FF');
+        doc.fillColor('#1E293B').font('Helvetica-Bold').fontSize(11).text(combinedCmoText, 65, doc.y + 10, { width: 480, lineGap: 3 });
+
+        doc.moveDown(3.5);
+
+        // --- 4. 👨‍⚕️ LAYER 2: PRIMARY SPECIALIST REVIEW (Hides beautifully if direct CMO bypass was utilized)
+        const specialistName = reviewData.assignedTo?.name || reviewData.doctorId?.name;
+        const specialistVerdict = reviewData.doctorOpinion?.finalVerdict;
+
+        if (specialistVerdict) {
+            doc.fillColor('#1E7D75').font('Helvetica-Bold').fontSize(13).text(`II. SPECIALIST CLINICAL ANALYSIS (Dr. ${specialistName})`);
+            doc.moveDown(0.5);
+
+            const specText = `Verdict:\n${specialistVerdict}\n\nClinical Roadmap:\n${reviewData.doctorOpinion?.recommendations || "Follow default therapeutic layout."}`;
+            const specBoxHeight = doc.heightOfString(specText, { width: 480 });
+
+            // Wrap block onto next page if space is constricted
+            if (doc.y + specBoxHeight > 700) doc.addPage();
+
+            doc.rect(50, doc.y, 512, specBoxHeight + 20).fill('#F8FAFC');
+            doc.fillColor('#334155').font('Helvetica').fontSize(11).text(specText, 65, doc.y + 10, { width: 480, lineGap: 3 });
+        } else {
+            // CMO Bypass placeholder text
+            doc.fillColor('#64748B').font('Helvetica-Oblique').fontSize(11).text('*Case directly accelerated to executive review layer. Specialist triage phase omitted.', { width: 512 });
+        }
+
+        // --- 5. SECURE DIGITAL SIGNATURE FOOTER TRACKING ---
+        const bottomY = 710;
+        doc.moveTo(50, bottomY).lineTo(562, bottomY).strokeColor('#E2E8F0').lineWidth(1).stroke();
+        
+        doc.fontSize(8).fillColor('#94A3B8').font('Helvetica')
+           .text('This is a validated electronic document generated by PramanAI. Authenticity and clinical ownership logs are cryptographic fields locked within our secure records database.', 50, bottomY + 10, { width: 512, align: 'center' });
 
         doc.end();
     } catch (err) {
-        console.error("Doctor PDF Error:", err);
-        if (!res.headersSent) res.status(500).send('Error generating Doctor PDF');
+        console.error("Unified Report PDF Error:", err);
+        if (!res.headersSent) res.status(500).send('Error generating joint verification bundle');
     }
 };

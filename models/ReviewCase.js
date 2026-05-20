@@ -5,10 +5,10 @@ const ReviewCaseSchema = new mongoose.Schema({
   doctorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true }, 
   recordIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'MedicalRecord', required: true }],
   patientNote: {
-        type: String,
-        trim: true,
-        maxlength: 2000 // Limit to ~300-400 words
-    },
+    type: String,
+    trim: true,
+    maxlength: 2000 // Limit to ~300-400 words
+  },
 
   assignedTo: { 
     type: mongoose.Schema.Types.ObjectId, 
@@ -19,15 +19,17 @@ const ReviewCaseSchema = new mongoose.Schema({
 
   status: { 
     type: String, 
-    enum: ['AI_PROCESSING', 
+    enum: [
+      'AI_PROCESSING', 
       'PENDING',
       'UNASSIGNED',          // Waiting for CMO to assign
       'PENDING_DOCTOR',      // Assigned to a Specialist
-      'PENDING_CMO_APPROVAL', // Specialist finished, waiting for CMO sign-off 🟢 NEW
-      'COMPLETED',   
-      'published',        // CMO approved, patient can see it
-      'CANCELLED'],
-    default: 'AI_PROCESSING' 
+      'PENDING_CMO_APPROVAL', // Specialist finished, waiting for CMO sign-off
+      'COMPLETED',           // CMO approved, finalized, patient can view complete package
+      'CANCELLED'
+    ],
+    default: 'AI_PROCESSING',
+    index: true
   },
 
   assignmentHistory: [{
@@ -45,37 +47,38 @@ const ReviewCaseSchema = new mongoose.Schema({
       default: 'Unknown' 
     }, 
     extractedMarkers: [String],
-    // 🟢 FIXED: Match field name used in aiService.js (analyzedAt)
     analyzedAt: { type: Date, default: Date.now },
-    // 🟢 ADDED: Useful for tracking which model gave which result
     modelVersion: String,
-    // 🟢 ADDED: To store failure reasons if AI fails
     errorLog: String 
   },
   
   priority: { 
     type: String, 
     enum: ['Normal', 'High'], 
-    default: 'Normal' 
+    default: 'Normal',
+    index: true
   },
   
+  // 👨‍⚕️ Core layer for Specialist clinical insights
   doctorOpinion: {
+    specialistId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // 🟢 FIXED: Keeps audit log of original author
     finalVerdict: String,
     recommendations: String,
-    reviewedAt: Date,
-    approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    approvedAt: Date,
-    cmoPrivateNote: String
+    reviewedAt: Date
   },
 
+  // 👑 Dedicated isolation layer for Chief Medical Officer authentication
   cmoOpinion: {
     updatedVerdict: String,
     updatedRecommendations: String,
     cmoPrivateNote: String,
-    publishedAt: Date,
-    cmoId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+    approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // 🟢 CLEANED: Consistently maps to active user session
+    approvedAt: { type: Date }
   }
 
 }, { timestamps: true }); // Automatically handles createdAt and updatedAt
+
+// Compound indexing to optimize real-time status fetching pipelines
+ReviewCaseSchema.index({ status: 1, assignedTo: 1 });
 
 module.exports = mongoose.model('ReviewCase', ReviewCaseSchema);
