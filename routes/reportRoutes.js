@@ -2,18 +2,20 @@ const express = require('express');
 const router = express.Router();
 const reportController = require('../controllers/reportController');
 
-// 🚀 Option A: Clean, Direct Semantic Endpoints (Used by our updated CaseSummary)
-router.get('/pdf-ai/:caseId', reportController.getAIAnalysisPDF);
-router.get('/pdf-final/:caseId', reportController.getDoctorReviewPDF);
+// 🤖 Isolated Machine Layer
+// Matches frontend request: /api/patient/case/pdf-ai/:caseId
+router.get('/case/pdf-ai/:caseId', reportController.getAIAnalysisPDF);
 
-// 🔄 Option B: Backward Compatibility Layer (Handles your original pattern flawlessly)
+// 👨‍⚕️ 👑 Combined Human Verification Layer (Doctor + CMO Bundle)
+// Matches frontend request: /api/patient/case/pdf-final/:caseId
+router.get('/case/pdf-final/:caseId', reportController.getDoctorReviewPDF);
+
+// 🔄 Backward Compatibility Layer (Just in case)
 router.get('/download/:type/:caseId', (req, res) => {
     const { type } = req.params;
-    
     if (type === 'ai') {
         return reportController.getAIAnalysisPDF(req, res);
     } else {
-        // Both 'doctor' and 'cmo' types now automatically route to the unified human bundle
         return reportController.getDoctorReviewPDF(req, res);
     }
 });
