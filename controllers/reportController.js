@@ -12,31 +12,26 @@ exports.getAIAnalysisPDF = async (req, res) => {
         const caseData = await ReviewCase.findById(caseId);
 
         if (!caseData) {
-            console.error(`❌ [PDF-AI ERROR] Case not found in Database for ID: ${caseId}`);
+            console.error(`❌ [PDF-AI ERROR] Case not found for ID: ${caseId}`);
             return res.status(404).json({ success: false, message: 'Case not found.' });
         }
         
-        console.log(`✅ [PDF-AI DB MATCH] Document retrieved successfully. Risk Level: ${caseData.aiAnalysis?.riskLevel || 'N/A'}`);
+        console.log(`✅ [PDF-AI DB MATCH] Document retrieved. Risk Level: ${caseData.aiAnalysis?.riskLevel || 'N/A'}`);
 
         const doc = new PDFDocument({ size: 'LETTER', margin: 50 }); 
 
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `inline; filename=PramanAI_AI_Report_${caseId.slice(-6)}.pdf`);
         
-        // Track byte stream output
         let bytesWritten = 0;
-        doc.on('data', (chunk) => {
-            bytesWritten += chunk.length;
-        });
-
+        doc.on('data', (chunk) => { bytesWritten += chunk.length; });
         doc.on('end', () => {
-            console.log(`🏁 [PDF-AI STREAM FINISHED] Generated successfully. Total File Size: ${(bytesWritten / 1024).toFixed(2)} KB`);
+            console.log(`🏁 [PDF-AI STREAM FINISHED] Size: ${(bytesWritten / 1024).toFixed(2)} KB`);
         });
 
         doc.pipe(res);
-        console.log(`📥 [PDF-AI PIPE] Data stream successfully attached to Express response object.`);
 
-        // --- 1. HEADER & CASE INFO ---
+        // --- 1. HEADER backgrounds ---
         doc.rect(0, 0, 612, 100).fill('#F0F9F8'); 
         doc.fillColor('#1E7D75').font('Helvetica-Bold').fontSize(24).text('Praman AI', 50, 35);
         doc.fillColor('#64748B').font('Helvetica').fontSize(10).text('PRELIMINARY CLINICAL CONTEXT', 50, 65);
@@ -47,7 +42,7 @@ exports.getAIAnalysisPDF = async (req, res) => {
 
         // --- 2. RISK STATUS ---
         let currentY = 160;
-        const risk = (caseData.aiAnalysis?.riskLevel || 'Low').toUpperCase();
+        const risk = String(caseData.aiAnalysis?.riskLevel || 'Low').toUpperCase();
         const riskColor = risk === 'HIGH' ? '#E11D48' : (risk === 'MEDIUM' ? '#F59E0B' : '#1E7D75');
         
         doc.fillColor('#64748B').font('Helvetica-Bold').fontSize(10).text('RISK STATUS:', 50, currentY);
@@ -61,33 +56,33 @@ exports.getAIAnalysisPDF = async (req, res) => {
         doc.fillColor('#1E7D75').font('Helvetica-Bold').fontSize(16).text('AI Executive Summary', 50, currentY);
         
         currentY += 25;
+        const aiSummaryText = String(caseData.aiAnalysis?.summary || "Automated analysis pending.");
         doc.fillColor('#334155').font('Helvetica').fontSize(11).text(
-            caseData.aiAnalysis?.summary || "Automated analysis pending.", 
-            50, currentY, { width: 512, align: 'justify', lineGap: 5 }
+            aiSummaryText, 50, currentY, { width: 512, align: 'justify', lineGap: 5 }
         );
 
         // --- 4. COLOR-CODED LAB MARKERS ---
-        currentY = doc.y + 35; 
+        let markersY = doc.y + 35; 
 
-        if (caseData.aiAnalysis?.extractedMarkers?.length > 0) {
-            doc.fillColor('#1E7D75').font('Helvetica-Bold').fontSize(14).text('Key Laboratory Markers', 50, currentY);
-            currentY = doc.y + 10;
+        if (caseData.aiAnalysis?.extractedMarkers && caseData.aiAnalysis.extractedMarkers.length > 0) {
+            if (markersY > 700) { doc.addPage(); markersY = 50; }
+            
+            doc.fillColor('#1E7D75').font('Helvetica-Bold').fontSize(14).text('Key Laboratory Markers', 50, markersY);
+            markersY = doc.y + 10;
 
             caseData.aiAnalysis.extractedMarkers.forEach((marker) => {
                 let itemColor = '#334155';
-                if (marker.includes('(High)') || marker.includes('(Abnormal)')) {
+                const markerStr = String(marker);
+                if (markerStr.includes('(High)') || markerStr.includes('(Abnormal)')) {
                     itemColor = '#E11D48';
-                } else if (marker.includes('(Low)')) {
+                } else if (markerStr.includes('(Low)')) {
                     itemColor = '#D97706';
                 }
 
-                if (currentY > 720) {
-                    doc.addPage();
-                    currentY = 50;
-                }
+                if (markersY > 720) { doc.addPage(); markersY = 50; }
 
-                doc.fillColor(itemColor).font('Helvetica').fontSize(10).text(`• ${marker}`, 60, currentY);
-                currentY = doc.y + 5;
+                doc.fillColor(itemColor).font('Helvetica').fontSize(10).text(`• ${markerStr}`, 60, markersY);
+                markersY = doc.y + 5;
             });
         }
 
@@ -156,30 +151,31 @@ exports.getDoctorReviewPDF = async (req, res) => {
         const finalDate = reviewData.cmoOpinion?.approvedAt ? new Date(reviewData.cmoOpinion.approvedAt) : new Date();
         doc.fillColor('#1E293B').font('Helvetica-Bold').fontSize(11).text(finalDate.toLocaleDateString(), 350, startY + 14);
 
-        // Advance cursor explicitly past the header metadata grid layout section safely
-        doc.y = startY + 45;
+        // Safely space out the cursor past header elements 
+        doc.moveDown(3);
 
         // --- 3. 👑 LAYER 1: CHIEF MEDICAL OFFICER DIRECTIVE ---
         doc.fillColor('#4338CA').font('Helvetica-Bold').fontSize(13).text('I. EXECUTIVE CMO VERIFICATION');
         doc.moveDown(0.5);
 
-        const cmoVerdict = reviewData.cmoOpinion?.updatedVerdict || "Approved and signed off by Executive Medical Board.";
-        const cmoRecs = reviewData.cmoOpinion?.updatedRecommendations || "The Chief Medical Officer has fully verified the clinical roadmap outlined below.";
+        const cmoVerdict = String(reviewData.cmoOpinion?.updatedVerdict || "Approved and signed off by Executive Medical Board.");
+        const cmoRecs = String(reviewData.cmoOpinion?.updatedRecommendations || "The Chief Medical Officer has fully verified the clinical roadmap outlined below.");
         const combinedCmoText = `Verdict:\n${cmoVerdict}\n\nRecommendations:\n${cmoRecs}`;
         
         const cmoBoxHeight = doc.heightOfString(combinedCmoText, { width: 480 });
 
-        // Draw the background frame first, then populate the text layer directly over it natively
-        doc.rect(50, doc.y, 512, cmoBoxHeight + 20).fill('#F5F7FF');
-        doc.fillColor('#1E293B').font('Helvetica-Bold').fontSize(10).text(combinedCmoText, 65, doc.y + 10, { width: 480, lineGap: 3 });
+        // Isolate block background painting using standalone Y coordinates
+        const cmoBoxY = doc.y;
+        doc.rect(50, cmoBoxY, 512, cmoBoxHeight + 20).fill('#F5F7FF');
+        doc.fillColor('#1E293B').font('Helvetica-Bold').fontSize(10).text(combinedCmoText, 65, cmoBoxY + 10, { width: 480, lineGap: 3 });
 
-        // Safely set the layout position cursor directly below the completed bounding frame calculation box
-        doc.y = doc.y + 25;
+        // Move cursor safely past the container height box boundary
+        doc.y = cmoBoxY + cmoBoxHeight + 35;
 
         // --- 4. 👨‍⚕️ LAYER 2: PRIMARY SPECIALIST REVIEW ---
         const specialistName = reviewData.assignedTo?.name || reviewData.doctorId?.name || "Staff Specialist";
-        const specialistVerdict = reviewData.doctorOpinion?.finalVerdict || "Initial clinical triage phase complete.";
-        const specialistRecs = reviewData.doctorOpinion?.recommendations || "Follow standard diagnostic therapeutic paths.";
+        const specialistVerdict = String(reviewData.doctorOpinion?.finalVerdict || "Initial clinical triage phase complete.");
+        const specialistRecs = String(reviewData.doctorOpinion?.recommendations || "Follow standard diagnostic therapeutic paths.");
 
         doc.fillColor('#1E7D75').font('Helvetica-Bold').fontSize(13).text(`II. SPECIALIST CLINICAL ANALYSIS (Dr. ${specialistName})`);
         doc.moveDown(0.5);
@@ -187,13 +183,13 @@ exports.getDoctorReviewPDF = async (req, res) => {
         const specText = `Verdict:\n${specialistVerdict}\n\nClinical Roadmap:\n${specialistRecs}`;
         const specBoxHeight = doc.heightOfString(specText, { width: 480 });
 
-        // Page boundary check to protect multi-page text rendering streams safely
         if (doc.y + specBoxHeight > 680) {
             doc.addPage();
         }
 
-        doc.rect(50, doc.y, 512, specBoxHeight + 20).fill('#F8FAFC');
-        doc.fillColor('#334155').font('Helvetica').fontSize(10).text(specText, 65, doc.y + 10, { width: 480, lineGap: 3 });
+        const specBoxY = doc.y;
+        doc.rect(50, specBoxY, 512, specBoxHeight + 20).fill('#F8FAFC');
+        doc.fillColor('#334155').font('Helvetica').fontSize(10).text(specText, 65, specBoxY + 10, { width: 480, lineGap: 3 });
 
         // --- 5. SECURE DIGITAL SIGNATURE FOOTER ---
         const bottomY = 710;
