@@ -126,7 +126,6 @@ exports.getDoctorReviewPDF = async (req, res) => {
         
         console.log(`✅ [PDF-FINAL DB MATCH] Case entry loaded. Status: ${reviewData.status}`);
 
-        // 🛡️ FAIL-SAFE: If data exists, generate the file regardless of strict string matching rules
         const doc = new PDFDocument({ size: 'LETTER', margin: 50 });
 
         res.setHeader('Content-Type', 'application/pdf');
@@ -157,22 +156,25 @@ exports.getDoctorReviewPDF = async (req, res) => {
         const finalDate = reviewData.cmoOpinion?.approvedAt ? new Date(reviewData.cmoOpinion.approvedAt) : new Date();
         doc.fillColor('#1E293B').font('Helvetica-Bold').fontSize(11).text(finalDate.toLocaleDateString(), 350, startY + 14);
 
-        doc.moveDown(3);
+        // Advance cursor explicitly past the header metadata grid layout section safely
+        doc.y = startY + 45;
 
         // --- 3. 👑 LAYER 1: CHIEF MEDICAL OFFICER DIRECTIVE ---
         doc.fillColor('#4338CA').font('Helvetica-Bold').fontSize(13).text('I. EXECUTIVE CMO VERIFICATION');
         doc.moveDown(0.5);
 
-        // Fallbacks prevent PDFKit from breaking on empty or undefined strings
         const cmoVerdict = reviewData.cmoOpinion?.updatedVerdict || "Approved and signed off by Executive Medical Board.";
         const cmoRecs = reviewData.cmoOpinion?.updatedRecommendations || "The Chief Medical Officer has fully verified the clinical roadmap outlined below.";
-        const combinedCmoText = `${cmoVerdict}\n\nRecommendations:\n${cmoRecs}`;
+        const combinedCmoText = `Verdict:\n${cmoVerdict}\n\nRecommendations:\n${cmoRecs}`;
+        
         const cmoBoxHeight = doc.heightOfString(combinedCmoText, { width: 480 });
 
+        // Draw the background frame first, then populate the text layer directly over it natively
         doc.rect(50, doc.y, 512, cmoBoxHeight + 20).fill('#F5F7FF');
-        doc.fillColor('#1E293B').font('Helvetica-Bold').fontSize(11).text(combinedCmoText, 65, doc.y + 10, { width: 480, lineGap: 3 });
+        doc.fillColor('#1E293B').font('Helvetica-Bold').fontSize(10).text(combinedCmoText, 65, doc.y + 10, { width: 480, lineGap: 3 });
 
-        doc.moveDown(3.5);
+        // Safely set the layout position cursor directly below the completed bounding frame calculation box
+        doc.y = doc.y + 25;
 
         // --- 4. 👨‍⚕️ LAYER 2: PRIMARY SPECIALIST REVIEW ---
         const specialistName = reviewData.assignedTo?.name || reviewData.doctorId?.name || "Staff Specialist";
@@ -185,10 +187,13 @@ exports.getDoctorReviewPDF = async (req, res) => {
         const specText = `Verdict:\n${specialistVerdict}\n\nClinical Roadmap:\n${specialistRecs}`;
         const specBoxHeight = doc.heightOfString(specText, { width: 480 });
 
-        if (doc.y + specBoxHeight > 700) doc.addPage();
+        // Page boundary check to protect multi-page text rendering streams safely
+        if (doc.y + specBoxHeight > 680) {
+            doc.addPage();
+        }
 
         doc.rect(50, doc.y, 512, specBoxHeight + 20).fill('#F8FAFC');
-        doc.fillColor('#334155').font('Helvetica').fontSize(11).text(specText, 65, doc.y + 10, { width: 480, lineGap: 3 });
+        doc.fillColor('#334155').font('Helvetica').fontSize(10).text(specText, 65, doc.y + 10, { width: 480, lineGap: 3 });
 
         // --- 5. SECURE DIGITAL SIGNATURE FOOTER ---
         const bottomY = 710;
