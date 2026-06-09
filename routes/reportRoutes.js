@@ -8,7 +8,7 @@ const reportController = require('../controllers/reportController');
 
 // Catch-all patterns to map your base server path configurations seamlessly
 router.get('pdf-final/:caseId', reportController.getDoctorReviewPDF);
-router.get('case/pdf-final/:caseId', reportController.getDoctorReviewPDF);
+router.get('/case/pdf-final/:caseId', reportController.getDoctorReviewPDF);
 router.get('patient/case/pdf-final/:caseId', reportController.getDoctorReviewPDF);
 
 
@@ -23,9 +23,11 @@ router.get('/patient/case/pdf-ai/:caseId', reportController.getAIAnalysisPDF);
 // 🔄 BACKWARD COMPATIBILITY MATCH
 router.get('/download/:type/:caseId', (req, res) => {
     const { type } = req.params;
+    console.log("typeeeeeeeeeeeeeeeee", type);
     if (type === 'ai') {
         return reportController.getAIAnalysisPDF(req, res);
     } else {
+        console.log("inside elseeeeeeeeeeeeeeeee");
         return reportController.getDoctorReviewPDF(req, res);
     }
 });

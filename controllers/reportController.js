@@ -110,6 +110,7 @@ exports.getAIAnalysisPDF = async (req, res) => {
  * 👨‍⚕️ 👑 UNIFIED CLINICAL VERDICT PDF (Doctor Review + CMO Verification Bundle)
  */
 exports.getDoctorReviewPDF = async (req, res) => {
+     console.log(`inside gertDoctorReviewPDF controller`);
     const { caseId } = req.params;
     console.log(`\n=== [PDF-FINAL START] Processing Case ID: ${caseId} ===`);
     
