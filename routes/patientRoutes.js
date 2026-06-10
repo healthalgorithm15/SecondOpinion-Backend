@@ -92,6 +92,7 @@ router.delete('/record/:id', deleteRecord);
  * @desc    Generates PDF for AI Analysis results
  */
 router.get('/case/pdf-ai/:caseId', getAIAnalysisPDF);
+router.get('/case/pdf-final/:caseId', reportController.getDoctorReviewPDF);
 
 /**
  * @route   GET /api/patient/case/pdf-doctor/:caseId

@@ -7,9 +7,9 @@ const reportController = require('../controllers/reportController');
 // ==========================================
 
 // Catch-all patterns to map your base server path configurations seamlessly
-router.get('pdf-final/:caseId', reportController.getDoctorReviewPDF);
+router.get('/pdf-final/:caseId', reportController.getDoctorReviewPDF);
 router.get('/case/pdf-final/:caseId', reportController.getDoctorReviewPDF);
-router.get('patient/case/pdf-final/:caseId', reportController.getDoctorReviewPDF);
+router.get('/patient/case/pdf-final/:caseId', reportController.getDoctorReviewPDF);
 
 
 // ==========================================
