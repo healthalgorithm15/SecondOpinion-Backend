@@ -92,8 +92,7 @@ router.delete('/record/:id', deleteRecord);
  * @desc    Generates PDF for AI Analysis results
  */
 router.get('/case/pdf-ai/:caseId', getAIAnalysisPDF);
-router.get('/case/pdf-final/:caseId', reportController.getDoctorReviewPDF);
-
+router.get('/case/pdf-final/:caseId', getDoctorReviewPDF);
 /**
  * @route   GET /api/patient/case/pdf-doctor/:caseId
  * @desc    Generates PDF for Doctor's Final Verdict (Only if status is COMPLETED)
