@@ -171,9 +171,9 @@ exports.getDoctorReviewPDF = async (req, res) => {
         doc.fillColor('#4338CA').font('Helvetica-Bold').fontSize(13).text('I. EXECUTIVE CMO VERIFICATION');
         doc.moveDown(0.5);
 
-        // Explicit fallback handling to ensure valid strings are passed to PDFKit
-        const cmoVerdict = reviewData.cmoOpinion?.updatedVerdict ? String(reviewData.cmoOpinion.updatedVerdict).trim() : "Approved and signed off by Executive Medical Board.";
-        const cmoRecs = reviewData.cmoOpinion?.updatedRecommendations ? String(reviewData.cmoOpinion.updatedRecommendations).trim() : "The Chief Medical Officer has fully verified the clinical roadmap outlined below.";
+        // Extract raw submitted CMO strings directly from the database schema context
+        const cmoVerdict = reviewData.cmoOpinion?.updatedVerdict ? String(reviewData.cmoOpinion.updatedVerdict).trim() : "Pending executive review confirmation.";
+        const cmoRecs = reviewData.cmoOpinion?.updatedRecommendations ? String(reviewData.cmoOpinion.updatedRecommendations).trim() : "The official clinical roadmap is under verification review.";
         const combinedCmoText = `Verdict:\n${cmoVerdict}\n\nRecommendations:\n${cmoRecs}`;
         
         const cmoBoxHeight = doc.heightOfString(combinedCmoText, { width: 480 });
@@ -190,16 +190,13 @@ exports.getDoctorReviewPDF = async (req, res) => {
         let specialistVerdict = reviewData.doctorOpinion?.finalVerdict ? String(reviewData.doctorOpinion.finalVerdict).trim() : "";
         let specialistRecs = reviewData.doctorOpinion?.recommendations ? String(reviewData.doctorOpinion.recommendations).trim() : "";
 
-        // Normalize string blocks for validation tracking
-        const searchVerdict = specialistVerdict.toLowerCase();
-        const searchRecs = specialistRecs.toLowerCase();
-
-        // 🌟 STRONGER GUARD: Safely intercept blank text, exact matches, or common structural placeholder overrides like "CMO review review"
-        if (!specialistVerdict || specialistVerdict === cmoVerdict || searchVerdict.includes('cmo review') || searchVerdict.includes('cmoreview')) {
-            specialistVerdict = "Primary clinical diagnostic triage step complete. All lab marker profiles have been parsed and mapped against multi-layer clinical vectors.";
+        // 🟢 FIX: Stripped out aggressive validation filters completely.
+        // It now prints precisely whatever string was submitted dynamically into the DB fields.
+        if (!specialistVerdict) {
+            specialistVerdict = "Primary clinical diagnostic triage step complete. Specialist verification pending.";
         }
-        if (!specialistRecs || specialistRecs === cmoRecs || searchRecs.includes('cmo review') || searchRecs.includes('cmoreview')) {
-            specialistRecs = "Follow standard outpatient treatment tracks. Monitor vital indicator cycles over bi-weekly windows and evaluate response metrics.";
+        if (!specialistRecs) {
+            specialistRecs = "Follow standard outpatient monitoring guidelines pending final diagnostic confirmation.";
         }
 
         doc.fillColor('#1E7D75').font('Helvetica-Bold').fontSize(13).text(`II. SPECIALIST CLINICAL ANALYSIS (Dr. ${specialistName})`);
