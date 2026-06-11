@@ -224,6 +224,9 @@ exports.notifyCMOReviewReady = async (caseId) => {
 /**
  * 🏁 FINAL STEP: CMO APPROVAL & EDIT
  */
+/**
+ * 🏁 FINAL STEP: CMO APPROVAL & EDIT
+ */
 exports.cmoFinalApproval = async (req, res) => {
   try {
     const { caseId, updatedVerdict, updatedRecommendations, cmoPrivateNote } = req.body;
@@ -232,50 +235,43 @@ exports.cmoFinalApproval = async (req, res) => {
       return res.status(403).json({ success: false, message: "CMO authority required." });
     }
 
-    // 1. Fetch the existing case first to make sure we have the Doctor's original data
+    // 1. Fetch the existing case first to make sure we have the Doctor's original data intact
     const existingCase = await ReviewCase.findById(caseId);
     if (!existingCase) return res.status(404).json({ success: false, message: "Case not found" });
 
+    // 2. Map data cleanly to separate isolated layers matching your Mongoose Schema
     const updateData = {
       status: 'COMPLETED',
-      'doctorOpinion.approvedBy': req.user._id,
-      'doctorOpinion.approvedAt': new Date(),
-      // Ensure we keep the specialist ID attached to the opinion
-      'doctorOpinion.specialistId': existingCase.assignedTo || existingCase.doctorId 
+      
+      // 👑 Save directly into the dedicated Chief Medical Officer isolation block
+      'cmoOpinion.approvedBy': req.user._id,
+      'cmoOpinion.approvedAt': new Date(),
+      'cmoOpinion.updatedVerdict': updatedVerdict ? String(updatedVerdict).trim() : "Approved and signed off by Executive Medical Board.",
+      'cmoOpinion.updatedRecommendations': updatedRecommendations ? String(updatedRecommendations).trim() : "The Chief Medical Officer has fully verified the clinical roadmap outlined below.",
     };
 
-    // 2. If the CMO provides an edit, we save it as the 'finalVerdict' 
-    // 🛠️ FIX: Changed fallback target from 'specialistVerdict' to 'finalVerdict' to avoid wiping doctor notes
-    if (updatedVerdict) {
-        updateData['doctorOpinion.finalVerdict'] = updatedVerdict;
-    } else {
-        // Fallback: If CMO didn't edit it, preserve the doctor's original text securely
-        updateData['doctorOpinion.finalVerdict'] = existingCase.doctorOpinion?.finalVerdict;
+    // If the optional private note exists, route it safely to the cmoOpinion subfield
+    if (cmoPrivateNote) {
+      updateData['cmoOpinion.cmoPrivateNote'] = cmoPrivateNote;
     }
 
-    if (updatedRecommendations) {
-        updateData['doctorOpinion.recommendations'] = updatedRecommendations;
-    } else {
-        // Fallback for recommendations object
-        updateData['doctorOpinion.recommendations'] = existingCase.doctorOpinion?.recommendations;
-    }
-
-    if (cmoPrivateNote) updateData['doctorOpinion.cmoPrivateNote'] = cmoPrivateNote;
-
+    // 3. Update the database using explicit dot-notation $set to safely guard both layers
     const updatedCase = await ReviewCase.findByIdAndUpdate(
       caseId, 
       { $set: updateData }, 
       { new: true }
     ).populate('patientId assignedTo doctorId'); // Fully populate reference objects
 
+    // 4. Trigger push notification systems out to the mobile client
     await exports.notifyPatientReportReady(caseId);
 
     res.status(200).json({ 
       success: true, 
-      message: "Report finalized and published.",
+      message: "Report finalized and published successfully with both clinical feedback layers.",
       data: updatedCase 
     });
   } catch (error) {
+    console.error("❌ [CMO APPROVAL SYSTEM ERROR]:", error);
     res.status(500).json({ success: false, error: error.message });
   }
 };

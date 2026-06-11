@@ -11,6 +11,7 @@ class CaseService {
    * Logs history and notifies the specific doctor.
    */
   async assignCaseToSpecialist(caseId, doctorId, assignedBy, note) {
+    // This one line now handles DB update, History, and the Push Notification!
     const updatedCase = await ReviewCase.findByIdAndUpdate(
       caseId,
       {
@@ -21,7 +22,7 @@ class CaseService {
             from: assignedBy, 
             to: doctorId, 
             note: note || "Assigned for specialist review",
-            timestamp: new Date()
+            assignedAt: new Date() // ✅ FIXED: Uses assignedAt to align perfectly with your schema model
           } 
         }
       },
@@ -60,7 +61,7 @@ class CaseService {
             from: cmoId, 
             to: cmoId, 
             note: "CMO self-assigned for direct review.",
-            timestamp: new Date()
+            assignedAt: new Date() // ✅ FIXED: Uses assignedAt to align perfectly with your schema model
           } 
         }
       },

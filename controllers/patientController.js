@@ -12,7 +12,7 @@ exports.getDashboard = async (req, res) => {
   try {
     const userId = req.user._id;
 
-    // 1. Get the most recent active case
+    // 1. Get the most recent active case (Matches strict Schema enum uppercase)
     const activeCase = await ReviewCase.findOne({ 
       patientId: userId, 
       status: { $ne: 'COMPLETED' } 
@@ -56,7 +56,6 @@ exports.getDashboard = async (req, res) => {
 /**
  * @desc    Submit reports for Specialist Review (Atomic Transaction)
  * @route   POST /api/patient/submit-review
- * @update  Added patientNote to capture clinical context/messages
  */
 exports.submitReview = async (req, res) => {
   const { reportIds, patientNote } = req.body; 
@@ -99,7 +98,7 @@ exports.submitReview = async (req, res) => {
       const newCase = new ReviewCase({ 
         patientId: userId, 
         recordIds: reportIds, 
-        patientNote: patientNote || "", // Store the clinical message here
+        patientNote: patientNote || "", 
         status: 'AI_PROCESSING' 
       });
       await newCase.save({ session });
@@ -125,7 +124,7 @@ exports.submitReview = async (req, res) => {
       });
     }
 
-    // 7. Trigger AI background service (Patient Note is now available in the DB for the AI)
+    // 7. Trigger AI background service
     aiService.analyzeReports(newCaseId).catch(err => console.error("AI Service Error:", err)); 
 
     res.status(200).json({ success: true, caseId: newCaseId });
@@ -220,7 +219,6 @@ exports.getCaseStatus = async (req, res) => {
   try {
     const patientCase = await ReviewCase.findById(req.params.caseId)
       .populate('recordIds', 'title category reportDate')
-      // Changed to 'assignedTo' or 'doctorId' based on your model
       .populate('assignedTo', 'name specialization') 
       .lean();
 
@@ -228,20 +226,26 @@ exports.getCaseStatus = async (req, res) => {
       return res.status(403).json({ success: false, message: "Access denied." });
     }
 
-    // Ensure doctorOpinion stays visible if published
-    const isReady = ['COMPLETED', 'published'].includes(patientCase.status);
+    const isReady = patientCase.status === 'COMPLETED';
+    
+    // 🛡️ SECURITY GATE: Wipe opinions from context if the report isn't completely published yet
     if (!isReady) {
       delete patientCase.doctorOpinion;
+      delete patientCase.cmoOpinion;
     }
 
+    // ⚙️ EXTENDED TELEMETRY: Maps every schema workflow checkpoint cleanly to React Native step engines
     const uiSteps = { 
       docsUploaded: true, 
       aiCompleted: !['AI_PROCESSING'].includes(patientCase.status), 
-      doctorStarted: !!patientCase.assignedTo || isReady 
+      doctorAssigned: !!patientCase.assignedTo || ['PENDING_DOCTOR', 'PENDING_CMO_APPROVAL', 'COMPLETED'].includes(patientCase.status),
+      doctorSubmitted: ['PENDING_CMO_APPROVAL', 'COMPLETED'].includes(patientCase.status),
+      cmoValidated: isReady 
     };
 
     res.status(200).json({ success: true, data: { ...patientCase, uiSteps } });
   } catch (error) {
+    console.error("❌ Status Tracker Error:", error);
     res.status(500).json({ success: false, message: "Error tracking case." });
   }
 };
@@ -254,7 +258,6 @@ exports.viewLocalFile = async (req, res) => {
     const record = await MedicalRecord.findById(req.params.id);
     if (!record) return res.status(404).json({ success: false, message: "Record not found." });
 
-    // Allow owner or the assigned medical staff to view
     if (record.userId.toString() !== req.user._id.toString() && !['doctor', 'cmo', 'admin'].includes(req.user.role)) {
       return res.status(403).json({ success: false, message: "Access denied." });
     }
@@ -301,13 +304,14 @@ exports.getReviewHistory = async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    // 🛡️ SECURITY GATE: Ensure internal opinions are hidden until COMPLETED
-   const sanitizedHistory = cases.map(c => {
-  if (!['COMPLETED', 'published'].includes(c.status)) {
-    delete c.doctorOpinion;
-  }
-  return c;
-});
+    // 🛡️ SECURITY GATE: Ensure internal medical feedback layouts stay hidden until finalized by CMO
+    const sanitizedHistory = cases.map(c => {
+      if (c.status !== 'COMPLETED') {
+        delete c.doctorOpinion;
+        delete c.cmoOpinion;
+      }
+      return c;
+    });
 
     res.status(200).json({ success: true, data: sanitizedHistory });
   } catch (error) {
@@ -330,10 +334,11 @@ exports.getPatientCaseById = async (req, res) => {
 
     const responseData = caseData.toObject();
     
-    // 🛡️ SECURITY GATE: Strictly hide the opinion unless finalized by CMO (status COMPLETED)
-    if (!['COMPLETED', 'published'].includes(responseData.status)) {
-  delete responseData.doctorOpinion; 
-}
+    // 🛡️ SECURITY GATE: Strictly hide dynamic reviews from payloads unless fully signed off by CMO
+    if (responseData.status !== 'COMPLETED') {
+      delete responseData.doctorOpinion; 
+      delete responseData.cmoOpinion;
+    }
     
     res.status(200).json({ success: true, data: responseData });
   } catch (error) {

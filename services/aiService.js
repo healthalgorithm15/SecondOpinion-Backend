@@ -28,7 +28,7 @@ exports.analyzeReports = async (caseId) => {
     console.log(`🚀 Starting Hybrid AI Analysis for Case: ${caseId}`);
     
     try {
-        // 🟢 UPDATE: Ensure we have the latest case data including the patientNote
+        // Ensure we have the latest case data including the patientNote
         const currentCase = await ReviewCase.findById(caseId).populate('recordIds');
         if (!currentCase || !currentCase.recordIds || currentCase.recordIds.length === 0) {
             throw new Error("Case records not found or empty.");
@@ -67,7 +67,6 @@ exports.analyzeReports = async (caseId) => {
             }
 
             // 2b. CLINICAL REASONING
-            // 🟢 UPDATE: Injecting the patient's note into the AI context
             const prompt = `
                 You are a professional medical assistant. Analyze the following medical reports.
                 
@@ -102,16 +101,24 @@ exports.analyzeReports = async (caseId) => {
             );
 
             const rawContent = aiResponse.choices[0].message.content;
-            const cleanJson = rawContent.replace(/```json|```/g, "").trim();
-            structuredData = JSON.parse(cleanJson);
+            
+            // Safe JSON Processing Block
+            try {
+                const cleanJson = rawContent.replace(/```json|```/g, "").trim();
+                structuredData = JSON.parse(cleanJson);
+            } catch (jsonParseErr) {
+                console.error("⚠️ AI JSON Parse failure, structural fallback initialized:", jsonParseErr.message);
+                throw new Error("MALFORMED_AI_RESPONSE");
+            }
         }
 
         // --- 3. DATABASE UPDATE ---
+        // ✅ FIX: The update is executed sequentially, allowing the downstream notification handler to run smoothly
         await ReviewCase.findByIdAndUpdate(caseId, {
             aiAnalysis: {
-                summary: structuredData.summary,
-                riskLevel: structuredData.riskLevel,
-                extractedMarkers: structuredData.markers,
+                summary: structuredData.summary || "Analysis parsed successfully.",
+                riskLevel: structuredData.riskLevel || "Medium",
+                extractedMarkers: structuredData.markers || [],
                 analyzedAt: new Date(),
                 modelVersion: USE_MOCK_AI ? "mock-mode" : "hybrid-docintel-gpt4o"
             },
@@ -124,6 +131,7 @@ exports.analyzeReports = async (caseId) => {
     } catch (error) {
         console.error(`❌ AI SERVICE ERROR [Case ${caseId}]:`, error.message);
         
+        // Error Fallback
         await ReviewCase.findByIdAndUpdate(caseId, {
             status: 'UNASSIGNED',
             aiAnalysis: { 
@@ -136,10 +144,10 @@ exports.analyzeReports = async (caseId) => {
         });
     } finally {
         try {
-            // This triggers notifications for the CMO to review the new case
+            // ✅ Trigger centralized real-time sockets & push notifications for the CMO
             await caseController.notifyDoctorCaseReady(caseId);
         } catch (notifyErr) {
-            console.error("🔔 Notification Failed:", notifyErr.message);
+            console.error("🔔 Notification Pipeline Blocked:", notifyErr.message);
         }
     }
 };

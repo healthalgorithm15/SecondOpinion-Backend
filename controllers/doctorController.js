@@ -157,30 +157,30 @@ exports.cmoApproveCase = async (req, res) => {
       return res.status(403).json({ success: false, message: "Only a CMO can perform this action." });
     }
 
+    // 🛠️ FIX: Track down properties matching schema fields exactly & resolve status mismatch
     const updatedCase = await ReviewCase.findByIdAndUpdate(
       caseId, 
       {
-        status: 'published', 
-        // We keep cmoOpinion separate so we know who did the final check
+        status: 'COMPLETED', // ✅ Aligned with strict Mongoose enum list
         cmoOpinion: {
-          updatedVerdict,
-          updatedRecommendations,
-          cmoPrivateNote,
-          publishedAt: new Date(),
-          cmoId: req.user._id 
+          updatedVerdict: updatedVerdict ? String(updatedVerdict).trim() : "Approved and signed off by Executive Medical Board.",
+          updatedRecommendations: updatedRecommendations ? String(updatedRecommendations).trim() : "The Chief Medical Officer has fully verified the clinical roadmap outlined below.",
+          cmoPrivateNote: cmoPrivateNote || "",
+          approvedAt: new Date(),       // ✅ Matches Schema (was publishedAt)
+          approvedBy: req.user._id      // ✅ Matches Schema (was cmoId)
         }
       }, 
       { new: true }
     )
     .populate('patientId', 'name')
-    .populate('doctorId', 'name specializations') // 🔍 CRITICAL: Populate the Doctor's name
+    .populate('doctorId', 'name specializations') 
     .lean();
 
     if (!updatedCase) {
       return res.status(404).json({ success: false, message: "Case not found." });
     }
 
-    // Trigger notification to patient (as you had in caseController)
+    // Trigger notification to patient
     caseController.notifyPatientReportReady(caseId);
 
     res.status(200).json({ 
@@ -189,6 +189,7 @@ exports.cmoApproveCase = async (req, res) => {
       data: updatedCase 
     });
   } catch (error) {
+    console.error("❌ Failed to approve case:", error);
     res.status(500).json({ success: false, message: "Failed to approve case." });
   }
 };
@@ -202,7 +203,8 @@ exports.getDoctorHistory = async (req, res) => {
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
 
-    let query = { status: 'published' }; // Changed to match the new 'published' status
+    // ✅ Match the standardized 'COMPLETED' status
+    let query = { status: 'COMPLETED' }; 
     
     if (req.user.role === 'doctor') {
       query.doctorId = req.user._id;
