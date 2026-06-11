@@ -115,7 +115,6 @@ exports.getDoctorReviewPDF = async (req, res) => {
     console.log(`\n=== [PDF-FINAL START] Processing Case ID: ${caseId} ===`);
     
     try {
-        // 1. Fetch case with a fallback catch block to handle population errors safely
         let reviewData;
         try {
             reviewData = await ReviewCase.findById(caseId)
@@ -139,7 +138,6 @@ exports.getDoctorReviewPDF = async (req, res) => {
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `inline; filename=Official_Medical_Report_${caseId}.pdf`);
 
-        // Track byte compilation stream output
         let bytesWritten = 0;
         doc.on('data', (chunk) => { bytesWritten += chunk.length; });
         doc.on('end', () => {
@@ -165,13 +163,15 @@ exports.getDoctorReviewPDF = async (req, res) => {
         const finalDate = reviewData.cmoOpinion?.approvedAt ? new Date(reviewData.cmoOpinion.approvedAt) : new Date();
         doc.fillColor('#1E293B').font('Helvetica-Bold').fontSize(11).text(finalDate.toLocaleDateString(), 350, startY + 14);
 
-        doc.moveDown(3);
+        // ✅ FIX: Explicitly pass the left margin (50) to reset the cursor vector back to the left margin bound
+        doc.text('', 50, startY + 35); 
+        doc.moveDown(2);
 
         // --- 3. 👑 LAYER 1: CHIEF MEDICAL OFFICER DIRECTIVE ---
-        doc.fillColor('#4338CA').font('Helvetica-Bold').fontSize(13).text('I. EXECUTIVE CMO VERIFICATION');
+        // ✅ FIX: Explicitly pass left coordinate alignment parameters to ensure it sits safely locked to the left margin border
+        doc.fillColor('#4338CA').font('Helvetica-Bold').fontSize(13).text('I. EXECUTIVE CMO VERIFICATION', 50, doc.y);
         doc.moveDown(0.5);
 
-        // Extract raw submitted CMO strings directly from the database schema context
         const cmoVerdict = reviewData.cmoOpinion?.updatedVerdict ? String(reviewData.cmoOpinion.updatedVerdict).trim() : "Pending executive review confirmation.";
         const cmoRecs = reviewData.cmoOpinion?.updatedRecommendations ? String(reviewData.cmoOpinion.updatedRecommendations).trim() : "The official clinical roadmap is under verification review.";
         const combinedCmoText = `Verdict:\n${cmoVerdict}\n\nRecommendations:\n${cmoRecs}`;
@@ -190,8 +190,6 @@ exports.getDoctorReviewPDF = async (req, res) => {
         let specialistVerdict = reviewData.doctorOpinion?.finalVerdict ? String(reviewData.doctorOpinion.finalVerdict).trim() : "";
         let specialistRecs = reviewData.doctorOpinion?.recommendations ? String(reviewData.doctorOpinion.recommendations).trim() : "";
 
-        // 🟢 FIX: Stripped out aggressive validation filters completely.
-        // It now prints precisely whatever string was submitted dynamically into the DB fields.
         if (!specialistVerdict) {
             specialistVerdict = "Primary clinical diagnostic triage step complete. Specialist verification pending.";
         }
@@ -199,7 +197,7 @@ exports.getDoctorReviewPDF = async (req, res) => {
             specialistRecs = "Follow standard outpatient monitoring guidelines pending final diagnostic confirmation.";
         }
 
-        doc.fillColor('#1E7D75').font('Helvetica-Bold').fontSize(13).text(`II. SPECIALIST CLINICAL ANALYSIS (Dr. ${specialistName})`);
+        doc.fillColor('#1E7D75').font('Helvetica-Bold').fontSize(13).text(`II. SPECIALIST CLINICAL ANALYSIS (Dr. ${specialistName})`, 50, doc.y);
         doc.moveDown(0.5);
 
         const specText = `Verdict:\n${specialistVerdict}\n\nClinical Roadmap:\n${specialistRecs}`;
